@@ -159,16 +159,25 @@ class ThrowingGeneralEnvCfg(DirectRLEnvCfg):
         init_state=RigidObjectCfg.InitialStateCfg()
     )
 
-    target_cfg: RigidObjectCfg = RigidObjectCfg(
+    target_cfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/target",
-        spawn= sim_utils.UsdFileCfg(
-            usd_path="/home/mun127/Documents/isaaclabphd-1/source/extensions/omni.isaac.lab_assets/data/Props/Target/target.usd",
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True,
-                rigid_body_enabled=True),
-            scale=(0.2,0.2,0.2),
-            mass_props=sim_utils.MassPropertiesCfg(mass=100.),
+        spawn=sim_utils.CylinderCfg(
+            radius=0.15,          # disk radius (m)
+            height=0.01,          # very thin -> disk-like
+            axis="X",             # axis along X => faces normal to X
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                kinematic_enabled=True,
+                rigid_body_enabled=True,
+            ),
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+            visual_material=sim_utils.PreviewSurfaceCfg(
+                diffuse_color=(1.0, 0.0, 0.0),   # bright red
+            ),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg()
+        # init_state=RigidObjectCfg.InitialStateCfg(
+        #     pos=(4.0, 0.0, 1.0),      # in front of robot, at some height
+        #     rot=(1.0, 0.0, 0.0, 0.0), # identity, since axis="X" already
+        # ),
     )
 
     # scene

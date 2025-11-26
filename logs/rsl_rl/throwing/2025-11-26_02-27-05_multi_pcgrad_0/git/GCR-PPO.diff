@@ -1,0 +1,35 @@
+--- git status ---
+On branch main
+Your branch is up to date with 'origin/main'.
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   source/isaaclab_tasks/isaaclab_tasks/direct/throwing/throwing_env_cfg.py
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	logs/
+	outputs/
+	source/isaaclab_tasks/isaaclab_tasks/direct/humanoid_throwing/
+	source/isaaclab_tasks/isaaclab_tasks/direct/throw/
+	source/isaaclab_tasks/isaaclab_tasks/direct/throwing/agents/rl_games_ppo_cfg.yaml
+	source/isaaclab_tasks/isaaclab_tasks/direct/throwing/agents/skrl_ppo_cfg.yaml
+
+no changes added to commit (use "git add" and/or "git commit -a") 
+
+
+--- git diff ---
+diff --git a/source/isaaclab_tasks/isaaclab_tasks/direct/throwing/throwing_env_cfg.py b/source/isaaclab_tasks/isaaclab_tasks/direct/throwing/throwing_env_cfg.py
+index d19ec91b..c8347c35 100644
+--- a/source/isaaclab_tasks/isaaclab_tasks/direct/throwing/throwing_env_cfg.py
++++ b/source/isaaclab_tasks/isaaclab_tasks/direct/throwing/throwing_env_cfg.py
+@@ -162,7 +162,7 @@ class ThrowingGeneralEnvCfg(DirectRLEnvCfg):
+     target_cfg: RigidObjectCfg = RigidObjectCfg(
+         prim_path="/World/envs/env_.*/target",
+         spawn= sim_utils.UsdFileCfg(
+-            usd_path="/home/mun127/Documents/isaaclabphd-1/source/extensions/omni.isaac.lab_assets/data/Props/Target/target.usd",
++            usd_path="/home/jjaykumarp/Projects/target.usd",
+             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True,
+                 rigid_body_enabled=True),
+             scale=(0.2,0.2,0.2),
