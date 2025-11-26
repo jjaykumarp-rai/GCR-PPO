@@ -8,6 +8,7 @@ from __future__ import annotations
 import gymnasium as gym
 import torch
 import copy
+import isaacsim.core.utils.stage as stage_utils
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.managers import SceneEntityCfg
@@ -136,6 +137,7 @@ class ThrowingEnv(DirectRLEnv):
 
         # clone, filter, and replicate
         self.scene.clone_environments(copy_from_source=False)
+        self._apply_env_color_pairs()
         
         self.scene.filter_collisions(global_prim_paths=[self.cfg.terrain.prim_path])
         # add lights
@@ -145,6 +147,74 @@ class ThrowingEnv(DirectRLEnv):
         light_cfg.func("/World/Light", light_cfg, orientation=(1.0, 0.0, 0.0, 0.0))
         #spherelight_cfg = sim_utils.SphereLightCfg(intensity=2600.0, color=(1., 1.,1.), radius=1., treat_as_point=True)
         #spherelight_cfg.func("/World/envs/env_.*/Robot/Light", spherelight_cfg,  translation=(0.0, 0.0, 0.5))
+
+    def _apply_env_color_pairs(self):
+        """Assign a unique color to each env's ball/target pair for easier visual distinction."""
+        env_colors = self._generate_env_color_palette(self.scene.cfg.num_envs)
+        if len(env_colors) == 0:
+            return
+
+        stage = stage_utils.get_current_stage()
+        sphere_material_path = getattr(self.cfg.sphere_cfg.spawn, "visual_material_path", "material") or "material"
+        target_material_path = None
+        target_cfg = getattr(self.cfg, "target_cfg", None)
+        target_available = hasattr(self, "target_object") and target_cfg is not None and target_cfg.spawn is not None
+        if target_available:
+            target_material_path = getattr(target_cfg.spawn, "visual_material_path", "material") or "material"
+
+        for env_index, env_path in enumerate(self.scene.env_prim_paths):
+            if env_index >= len(env_colors):
+                break
+            color = env_colors[env_index]
+            sphere_shader_path = f"{env_path}/sphere/geometry/{sphere_material_path}/Shader"
+            self._set_shader_color(stage, sphere_shader_path, color)
+            if target_material_path is not None:
+                target_shader_path = f"{env_path}/target/geometry/{target_material_path}/Shader"
+                self._set_shader_color(stage, target_shader_path, color)
+
+    def _generate_env_color_palette(self, num_envs: int) -> list[tuple[float, float, float]]:
+        """Generate evenly spaced colors on the HSV wheel for the requested number of environments."""
+        if num_envs <= 0:
+            return []
+        saturation, value = 0.75, 0.9
+        colors: list[tuple[float, float, float]] = []
+        for env_index in range(num_envs):
+            hue = (env_index / max(num_envs, 1)) % 1.0
+            colors.append(self._hsv_to_rgb(hue, saturation, value))
+        return colors
+
+    @staticmethod
+    def _set_shader_color(stage, shader_path: str, color: tuple[float, float, float]):
+        prim = stage.GetPrimAtPath(shader_path)
+        if prim.IsValid():
+            sim_utils.safe_set_attribute_on_usd_prim(
+                prim, "inputs:diffuseColor", color, camel_case=False
+            )
+
+    @staticmethod
+    def _hsv_to_rgb(hue: float, saturation: float, value: float) -> tuple[float, float, float]:
+        """Convert HSV color to RGB tuple."""
+        hue = hue % 1.0
+        i = int(hue * 6.0)
+        f = hue * 6.0 - i
+        i = i % 6
+        p = value * (1.0 - saturation)
+        q = value * (1.0 - f * saturation)
+        t = value * (1.0 - (1.0 - f) * saturation)
+
+        if i == 0:
+            r, g, b = value, t, p
+        elif i == 1:
+            r, g, b = q, value, p
+        elif i == 2:
+            r, g, b = p, value, t
+        elif i == 3:
+            r, g, b = p, q, value
+        elif i == 4:
+            r, g, b = t, p, value
+        else:
+            r, g, b = value, p, q
+        return (r, g, b)
 
     '''def _clip_actions(self, actions: torch.Tensor) -> torch.Tensor:
         # copy actions to avoid in-place modification
