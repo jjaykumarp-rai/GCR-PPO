@@ -11,7 +11,7 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 class ThrowingPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 26
     max_iterations = 12000
-    save_interval = 50
+    save_interval = 10
     experiment_name = "throwing"
     empirical_normalization = False
     policy = RslRlPpoActorCriticCfg(

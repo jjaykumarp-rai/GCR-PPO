@@ -8,6 +8,7 @@ from __future__ import annotations
 import gymnasium as gym
 import torch
 import copy
+from math import gcd
 import isaacsim.core.utils.stage as stage_utils
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, RigidObject
@@ -162,10 +163,11 @@ class ThrowingEnv(DirectRLEnv):
         if target_available:
             target_material_path = getattr(target_cfg.spawn, "visual_material_path", "material") or "material"
 
+        color_indices = self._color_distribution_indices(len(env_colors))
         for env_index, env_path in enumerate(self.scene.env_prim_paths):
             if env_index >= len(env_colors):
                 break
-            color = env_colors[env_index]
+            color = env_colors[color_indices[env_index]]
             sphere_shader_path = f"{env_path}/sphere/geometry/{sphere_material_path}/Shader"
             self._set_shader_color(stage, sphere_shader_path, color)
             if target_material_path is not None:
@@ -215,6 +217,21 @@ class ThrowingEnv(DirectRLEnv):
         else:
             r, g, b = value, p, q
         return (r, g, b)
+
+    def _color_distribution_indices(self, num_envs: int) -> list[int]:
+        """Return a permutation of indices so consecutive envs get well-separated colors."""
+        if num_envs <= 1:
+            return list(range(num_envs))
+        step = max(1, num_envs // 3 or 1)
+        # ensure step and num_envs are co-prime to cover all colors
+        while gcd(step, num_envs) != 1:
+            step += 1
+        order = []
+        idx = 0
+        for _ in range(num_envs):
+            order.append(idx)
+            idx = (idx + step) % num_envs
+        return order
 
     '''def _clip_actions(self, actions: torch.Tensor) -> torch.Tensor:
         # copy actions to avoid in-place modification
