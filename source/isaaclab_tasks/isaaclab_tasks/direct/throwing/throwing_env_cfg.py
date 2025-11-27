@@ -216,6 +216,7 @@ class ThrowingGeneralEnvCfg(DirectRLEnvCfg):
     r_stability_thresh = 0.22
 
     # just for experiments...
+    target_fov_deg = 60.0
     distance_throw = False
     arm_only = False
     use_stability = False # dont need
