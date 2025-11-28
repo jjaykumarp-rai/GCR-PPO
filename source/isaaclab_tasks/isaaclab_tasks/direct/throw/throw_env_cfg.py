@@ -245,14 +245,20 @@ class ThrowingGeneralEnvCfg(DirectRLEnvCfg):
     r_throw_thresh = 0.5
     r_stability_thresh = 0.22
 
+    # target placement controls
+    target_fov_deg = 30.0
+    target_height_range = (0.1, 1.0)
+    # Rotate target heading relative to the world forward (+X).
+    target_heading_offset_deg = 0.0
+    robot_yaw_offset_deg = 0.0
+
     # just for experiments...
-    target_fov_deg = 60.0
     distance_throw = False
     arm_only = False
     use_stability = False # dont need
     no_proj_motion = False
     nonsparse_stability_reward = True
-    max_throw_dist = 4
+    max_throw_dist = 8
 
 
 '''
