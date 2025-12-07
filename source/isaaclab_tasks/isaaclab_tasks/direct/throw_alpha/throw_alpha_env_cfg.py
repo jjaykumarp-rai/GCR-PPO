@@ -268,6 +268,8 @@ class ThrowingAlphaGeneralEnvCfg(DirectRLEnvCfg):
     action_rate_reward_scale = -1e-3
     joint_torque_reward_scale = -2.5e-6
     joint_accel_reward_scale = -2.5e-8
+    use_roll_reward = True
+    use_stability_reward = True
 
     arm_dr_range = 0.3
     obs_lin_vel = True

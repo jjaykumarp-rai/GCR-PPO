@@ -475,6 +475,8 @@ class ThrowingAlphaEnv(DirectRLEnv):
         roll_rew = (-1.0 / (1.0 + torch.exp(-10.0 * (torch.abs(roll) - 0.3)))) * (
             1.0 - torch.exp(-(torch.abs(roll) - 0.1) / 0.1)
         )
+        if not self.cfg.use_roll_reward:
+            roll_rew = torch.zeros_like(roll_rew)
 
         # stability reward
         base_height_cond = self._robot.data.root_pos_w[:, 2] <= self.min_base_height
@@ -501,6 +503,8 @@ class ThrowingAlphaEnv(DirectRLEnv):
                 (~(base_height_cond | ball_not_thrown_cond | collision)).float()
                 / self.max_episode_length_s
             ) * self.step_dt
+        if not self.cfg.use_stability_reward:
+            stability_rew = torch.zeros_like(stability_rew)
 
         # regularization terms
         action_rate = torch.sum(torch.square(self._actions - self._previous_actions), dim=1)
@@ -865,39 +869,39 @@ class ThrowingAlphaEnv(DirectRLEnv):
 
         if self.cfg.air_resistance:
             raise NotImplementedError
-        else:
-            vx0 = ball_data[:, 7]
-            vy0 = ball_data[:, 8]
-            vz0 = ball_data[:, 9]
-            a = 9.81
-            z0 = ball_data[:, 2]
-            z0_minus_0_03 = torch.clamp(z0 - 0.03, min=0.0)
-            sqrt_term = torch.sqrt(vz0**2 + 2 * a * z0_minus_0_03)
 
-            t1 = (-vz0 + sqrt_term) / -a
-            t2 = (-vz0 - sqrt_term) / -a
-            tz = torch.max(t1, t2)
-            tz = torch.clamp(tz, min=0.0)
+        distance_command = self.throwing_commands[env_ids, 0].unsqueeze(0)
+        vx0 = ball_data[:, 7]
+        vy0 = ball_data[:, 8]
+        vz0 = ball_data[:, 9]
+        a = 9.81
+        z0 = ball_data[:, 2]
+        z0_minus_0_03 = torch.clamp(z0 - 0.03, min=0.0)
+        sqrt_term = torch.sqrt(vz0**2 + 2 * a * z0_minus_0_03)
 
-            steps = 100
-            frac = torch.linspace(0, 1, steps=steps, device=self.device).unsqueeze(1)
-            time_tensor = frac * tz.unsqueeze(0)
+        t1 = (-vz0 + sqrt_term) / -a
+        t2 = (-vz0 - sqrt_term) / -a
+        tz = torch.max(t1, t2)
+        tz = torch.clamp(tz, min=0.0)
 
-            new_x = ball_data[:, 0].unsqueeze(0) + vx0.unsqueeze(0) * time_tensor
-            new_y = ball_data[:, 1].unsqueeze(0) + vy0.unsqueeze(0) * time_tensor
-            new_z = ball_data[:, 2].unsqueeze(0) + vz0.unsqueeze(0) * time_tensor - 0.5 * a * time_tensor**2
+        steps = 100
+        frac = torch.linspace(0, 1, steps=steps, device=self.device).unsqueeze(1)
+        time_tensor = frac * tz.unsqueeze(0)
 
-            distance_command = self.throwing_commands[env_ids, 0].unsqueeze(0)
-            disp_matrix = torch.sqrt(
-                (new_x - target_positions[:, 0].unsqueeze(0)) ** 2
-                + (new_y - target_positions[:, 1].unsqueeze(0)) ** 2
-                + (new_z - target_positions[:, 2].unsqueeze(0)) ** 2
-            ) / distance_command
-            disp_matrix = torch.clamp(disp_matrix, max=1.0)
+        new_x = ball_data[:, 0].unsqueeze(0) + vx0.unsqueeze(0) * time_tensor
+        new_y = ball_data[:, 1].unsqueeze(0) + vy0.unsqueeze(0) * time_tensor
+        new_z = ball_data[:, 2].unsqueeze(0) + vz0.unsqueeze(0) * time_tensor - 0.5 * a * time_tensor**2
 
-            disp_min, idx_min = torch.amin(disp_matrix, dim=0), torch.argmin(disp_matrix, dim=0)
-            batch_idx = torch.arange(len(env_ids), device=self.device)
-            time_at_min = time_tensor[idx_min, batch_idx]
+        disp_matrix = torch.sqrt(
+            (new_x - target_positions[:, 0].unsqueeze(0)) ** 2
+            + (new_y - target_positions[:, 1].unsqueeze(0)) ** 2
+            + (new_z - target_positions[:, 2].unsqueeze(0)) ** 2
+        ) / distance_command
+        disp_matrix = torch.clamp(disp_matrix, max=1.0)
+
+        disp_min, idx_min = torch.amin(disp_matrix, dim=0), torch.argmin(disp_matrix, dim=0)
+        batch_idx = torch.arange(len(env_ids), device=self.device)
+        time_at_min = time_tensor[idx_min, batch_idx]
         return disp_min, time_at_min
 
     def initialise_target_for_rendering(self, env_ids: torch.Tensor):
