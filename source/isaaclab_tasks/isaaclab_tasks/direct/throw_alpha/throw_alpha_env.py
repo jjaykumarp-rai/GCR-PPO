@@ -46,7 +46,8 @@ class ThrowingAlphaEnv(DirectRLEnv):
     def __init__(self, cfg: ThrowingAlphaGeneralEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
-        # Actions: 8 arm DOFs + 1 grip scalar
+        # Actions: (TJ1 + right arm + left arm) DOFs + 1 grip scalar
+        # With TJ1 + 7 right + 7 left + 1 grip = 16 dims
         self._actions = torch.zeros(self.num_envs, gym.spaces.flatdim(self.single_action_space), device=self.device)
         self._previous_actions = torch.zeros_like(self._actions)
 
@@ -103,6 +104,15 @@ class ThrowingAlphaEnv(DirectRLEnv):
             self.reward_component_task_rew.append("rgtarmrel_rew")
             self._episode_sums["rgtarmrel_rew"] = torch.zeros(self.num_envs, device=self.device)
 
+        # ---- curriculum vectors (simple initialization) ----
+        # These are used only if the corresponding *_rew flags are true.
+        self.baseh_rew_vec = torch.zeros(1, device=self.device)
+        self.energy_rew_vec = torch.zeros(1, device=self.device)
+        self.ballrel_rew_vec = torch.zeros(1, device=self.device)
+        self.bodymo_rew_vec = torch.zeros(1, device=self.device)
+        self.lftarm_rew_vec = torch.zeros(1, device=self.device)
+        self.rgtarmrel_rew_vec = torch.zeros(1, device=self.device)
+
         # ball release bookkeeping
         self.not_released_ball = torch.ones((self.num_envs), device=self.device).bool()
         self.throwing_reward = torch.ones((self.num_envs), device=self.device) * -1.0
@@ -118,7 +128,7 @@ class ThrowingAlphaEnv(DirectRLEnv):
 
         # ----- initial curriculum: start easy (close + low height), then go farther -----
         if self.cfg.distance_throw:
-            # "pure distance" setting (if you ever use it): start at 1 m and slowly push out
+            # "pure distance" setting: start at 1 m and slowly push out
             self.distance_range = [1.0, 2.5]
             self.theta_range = [1.0, 1.0]
         else:
@@ -192,6 +202,7 @@ class ThrowingAlphaEnv(DirectRLEnv):
         light_cfg.func("/World/Light", light_cfg, orientation=(1.0, 0.0, 0.0, 0.0))
 
         # Initialize DOF/body indices once simulation assets are loaded
+        # (actually called lazily at first reset)
         # self._init_dof_and_body_indices()
 
     def _init_dof_and_body_indices(self):
@@ -200,15 +211,28 @@ class ThrowingAlphaEnv(DirectRLEnv):
         body_names = list(self._robot.data.body_names)
         cs_body_names = list(self._contact_sensor.body_names)
 
-        # Arm DOFs (should match exactly)
-        arm_joint_names = ["TJ1", "RJ1", "RJ2", "RJ3", "RJ4", "RJ5", "RJ6", "RJ7"]
+        # Arm DOFs: trunk + right arm + left arm.
+        # Adjust left_arm_joint_names if your naming is different.
+        right_arm_joint_names = ["RJ1", "RJ2", "RJ3", "RJ4", "RJ5", "RJ6", "RJ7"]
+        left_arm_joint_names = ["LJ1", "LJ2", "LJ3", "LJ4", "LJ5", "LJ6", "LJ7"]
+
+        arm_joint_names = ["TJ1"] + right_arm_joint_names + left_arm_joint_names
+
         arm_ids = []
         for name in arm_joint_names:
             if name in joint_names:
                 arm_ids.append(joint_names.index(name))
-        if len(arm_ids) != 8:
-            print("[WARN] Could not find all 8 Alpha arm joints by name. Found:", arm_ids)
+            else:
+                print(f"[WARN] Arm joint '{name}' not found in joint_names.")
+
         self._arm_dof_ids = torch.tensor(arm_ids, device=self.device, dtype=torch.long)
+
+        if len(arm_ids) != len(arm_joint_names):
+            print(
+                f"[WARN] Expected {len(arm_joint_names)} arm joints "
+                f"(TJ1 + 7 right + 7 left), but found {len(arm_ids)}. "
+                "Check joint naming in the Alpha URDF/USD."
+            )
 
         # Finger DOFs: any joint name containing right_index / right_pinky / right_thumb
         finger_keywords = ["right_index", "right_pinky", "right_thumb"]
@@ -334,22 +358,24 @@ class ThrowingAlphaEnv(DirectRLEnv):
     # ----------------------------------------------------------------------
 
     def _pre_physics_step(self, actions: torch.Tensor):
-        # actions: [num_envs, 9]
+        # actions: [num_envs, num_arm_dofs + 1(grip)]
         self._actions = actions.clone()
 
-        # 8 arm DOFs
-        arm_actions = self._actions[:, :8]  # [N, 8]
-        default_arm_pos = self._robot.data.default_joint_pos[:, self._arm_dof_ids]  # [N, 8]
+        num_arm_dofs = self._arm_dof_ids.numel()
+
+        # All arm DOFs (TJ1 + right + left arm)
+        arm_actions = self._actions[:, :num_arm_dofs]  # [N, num_arm_dofs]
+        default_arm_pos = self._robot.data.default_joint_pos[:, self._arm_dof_ids]  # [N, num_arm_dofs]
         arm_targets = default_arm_pos + self.cfg.action_scale * arm_actions
 
-        # 9th dim is grip: >0 = open, <0 = closed
-        grip = self._actions[:, 8].unsqueeze(-1)  # [N, 1]
+        # Next dim is grip: >0 = open, <0 = closed
+        grip = self._actions[:, num_arm_dofs].unsqueeze(-1)  # [N, 1]
 
         # finger DOFs
         if self._finger_dof_ids is not None and self._finger_dof_ids.numel() > 0:
             default_finger_pos = self._robot.data.default_joint_pos[:, self._finger_dof_ids]  # [N, F]
             closed_finger_pos = default_finger_pos + 0.5  # tune
-            open_finger_pos = default_finger_pos - 0.2    # tune
+            open_finger_pos = default_finger_pos - 0.2   # tune
 
             alpha = (grip.clamp(-1.0, 1.0) + 1.0) * 0.5  # [-1,1] → [0,1]
             finger_targets = (1 - alpha) * closed_finger_pos + alpha * open_finger_pos
@@ -539,8 +565,11 @@ class ThrowingAlphaEnv(DirectRLEnv):
             self.extras["log"]["base_height_success_pct"] = pct
 
         if self.cfg.energy_rew:
+            # FIXED: use only actuated torso+arms joints (self._arm_dof_ids)
+            num_arm_dofs = self._arm_dof_ids.numel()
+            joint_vel_arm = self._robot.data.joint_vel[:, self._arm_dof_ids]  # [N, num_arm_dofs]
             electricity_cost = torch.sum(
-                torch.abs(self._actions[:, :-1] * self._robot.data.joint_vel[:, :23]),
+                torch.abs(self._actions[:, :num_arm_dofs] * joint_vel_arm),
                 dim=-1,
             )
             energy_vals_tensor = [[40, 70], [70, 100], [100, 130], [130, 160], [160, 200]]

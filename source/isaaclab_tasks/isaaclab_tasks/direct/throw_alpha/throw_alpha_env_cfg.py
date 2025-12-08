@@ -37,13 +37,32 @@ JOINT_LIMITS = {
     "RJ7": {"lower": -0.349066, "upper": 0.349066, "vel": 200.0, "tau": 12.0},
 }
 
+# -----------------------------
+# Joint groups for actions
+# -----------------------------
+
+# 1) Torso DOF(s)
+TORSO_JOINTS = ["TJ1"]
+
+# 2) Right arm joints
+RIGHT_ARM_JOINTS = ["RJ1", "RJ2", "RJ3", "RJ4", "RJ5", "RJ6", "RJ7"]
+
+# 3) Left arm joints
+# ⚠️ IMPORTANT: update these names to match your actual USD joint names.
+LEFT_ARM_JOINTS = ["LJ1", "LJ2", "LJ3", "LJ4", "LJ5", "LJ6", "LJ7"]
+
 
 def _make_alpha_impedance_actuator() -> DelayedPDActuatorCfg:
-    """Impedance (Delayed PD) actuator for the Alpha throwing arm."""
-    joint_names = ["TJ1", "RJ1", "RJ2", "RJ3", "RJ4", "RJ5", "RJ6", "RJ7"]
+    """Impedance (Delayed PD) actuator for torso + right arm + left arm."""
 
+    # Full list of controlled joints (in any order)
+    joint_names = TORSO_JOINTS + RIGHT_ARM_JOINTS + LEFT_ARM_JOINTS
+
+    # Reuse right-arm gains for left arm (you can tune separately later)
     stiffness = {
+        # torso
         "TJ1": 937.0,
+        # right arm
         "RJ1": 295.0,
         "RJ2": 334.0,
         "RJ3": 334.0,
@@ -51,10 +70,20 @@ def _make_alpha_impedance_actuator() -> DelayedPDActuatorCfg:
         "RJ5": 26.8,
         "RJ6": 6.5,
         "RJ7": 6.5,
+        # left arm (mirrored)
+        "LJ1": 295.0,
+        "LJ2": 334.0,
+        "LJ3": 334.0,
+        "LJ4": 334.0,
+        "LJ5": 26.8,
+        "LJ6": 6.5,
+        "LJ7": 6.5,
     }
 
     damping = {
+        # torso
         "TJ1": 4.7,
+        # right arm
         "RJ1": 3.1,
         "RJ2": 6.6,
         "RJ3": 6.6,
@@ -62,9 +91,21 @@ def _make_alpha_impedance_actuator() -> DelayedPDActuatorCfg:
         "RJ5": 0.3,
         "RJ6": 0.3,
         "RJ7": 0.3,
+        # left arm (mirrored)
+        "LJ1": 3.1,
+        "LJ2": 6.6,
+        "LJ3": 6.6,
+        "LJ4": 6.6,
+        "LJ5": 0.3,
+        "LJ6": 0.3,
+        "LJ7": 0.3,
     }
 
-    torque_limits = {name: JOINT_LIMITS[name]["tau"] for name in joint_names}
+    # If a joint is not in JOINT_LIMITS (e.g., left arm), fall back to RJ5 tau
+    torque_limits = {
+        name: JOINT_LIMITS.get(name, JOINT_LIMITS["RJ5"])["tau"]
+        for name in joint_names
+    }
 
     return DelayedPDActuatorCfg(
         joint_names_expr=joint_names,
@@ -111,7 +152,7 @@ ALPHA_CFG = ArticulationCfg(
 )
 
 # --------------------------------------------------------------------------
-# Terrain (same as your G1 file, you can tweak later)
+# Terrain
 # --------------------------------------------------------------------------
 
 COBBLESTONE_ROAD_CFG = terrain_gen.TerrainGeneratorCfg(
@@ -175,7 +216,8 @@ class ThrowingAlphaGeneralEnvCfg(DirectRLEnvCfg):
     episode_length_s = 2.0
     decimation = 4
     action_scale = 0.5
-    action_space = 24
+    # Actions: [ torso (1), right arm (7), left arm (7), grip (1) ] = 16
+    action_space = 16
     observation_space = 100
     state_space = 0
     air_resistance = False
@@ -246,7 +288,11 @@ class ThrowingAlphaGeneralEnvCfg(DirectRLEnvCfg):
     )
 
     # scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=4.0, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(
+        num_envs=4096,
+        env_spacing=4.0,
+        replicate_physics=True,
+    )
 
     # events
     events: EventCfg = EventCfg()
@@ -258,48 +304,70 @@ class ThrowingAlphaGeneralEnvCfg(DirectRLEnvCfg):
         track_air_time=True,
     )
 
-    # 🔴 Use Alpha robot instead of G1
+    # Use Alpha robot instead of G1
     robot: ArticulationCfg = ALPHA_CFG.replace(prim_path="/World/envs/env_.*/Robot")
 
-    throwing_reward_scale = 2.05
-    roll_reward_scale = 0.43
-    stability_reward_scale = 0.25
-    throw_height_reward_scale = 2.0
-    action_rate_reward_scale = -1e-3
-    joint_torque_reward_scale = -2.5e-6
-    joint_accel_reward_scale = -2.5e-8
-    use_roll_reward = True
-    use_stability_reward = True
 
-    arm_dr_range = 0.3
-    obs_lin_vel = True
-    obs_ang_vel = True
-    obs_proj_grav = True
-    obs_roll = True
-    obs_baseheight = False
-    obs_footangle = False
-    obs_notrelease = True
-    obs_estimdisplace = True
-    r_throw_thresh = 0.5
-    r_stability_thresh = 0.22
+    # ------------------------------------------------------------------
+    # Rewards: base scales
+    # ------------------------------------------------------------------
+    throwing_reward_scale: float = 3.0
+    roll_reward_scale: float = 0.5
+    stability_reward_scale: float = 0.25
+    throw_height_reward_scale: float = 2.0
+    action_rate_reward_scale: float = -1e-3
+    joint_torque_reward_scale: float = -2.5e-6
+    joint_accel_reward_scale: float = -2.5e-8
 
-    # target placement
-    target_fov_deg = 30.0
-    target_height_range = (0.1, 1.0)
-    target_heading_offset_deg = 0.0
-    robot_yaw_offset_deg = 0.0
+    # optional reward term scales
+    baseh_reward_scale: float = 0.5
+    energy_reward_scale: float = 2.0
+    ballrel_reward_scale: float = 1.5
+    bodymo_reward_scale: float = 1.0
+    lftarm_reward_scale: float = 1.0
+    rgtarmrel_reward_scale: float = 2.0
 
-    distance_throw = False
-    arm_only = False
-    use_stability = False
-    no_proj_motion = False
-    nonsparse_stability_reward = True
-    max_throw_dist = 8
+    use_roll_reward: bool = True
+    use_stability_reward: bool = True
 
-    # toggles for extra reward terms (used by env)
+    # ------------------------------------------------------------------
+    # Observations / thresholds
+    # ------------------------------------------------------------------
+    arm_dr_range: float = 0.3
+    obs_lin_vel: bool = True
+    obs_ang_vel: bool = True
+    obs_proj_grav: bool = True
+    obs_roll: bool = True
+    obs_baseheight: bool = False
+    obs_footangle: bool = False
+    obs_notrelease: bool = True
+    obs_estimdisplace: bool = True
+
+    r_throw_thresh: float = 0.5
+    r_stability_thresh: float = 0.22
+
+    # ------------------------------------------------------------------
+    # Target placement
+    # ------------------------------------------------------------------
+    target_fov_deg: float = 30.0
+    target_height_range: tuple[float, float] = (0.1, 1.0)
+    target_heading_offset_deg: float = 0.0
+    robot_yaw_offset_deg: float = 0.0
+
+    # ------------------------------------------------------------------
+    # Mode flags
+    # ------------------------------------------------------------------
+    distance_throw: bool = False
+    arm_only: bool = False
+    use_stability: bool = False
+    no_proj_motion: bool = False
+    nonsparse_stability_reward: bool = True
+    max_throw_dist: int = 8
+
+    # toggles for extra reward terms
     baseh_rew: bool = False
-    energy_rew: bool = False
-    ballrel_rew: bool = False
-    bodymo_rew: bool = False
-    lftarm_rew: bool = False
-    rgtarmrel_rew: bool = False
+    energy_rew: bool = True
+    ballrel_rew: bool = True
+    bodymo_rew: bool = True
+    lftarm_rew: bool = True
+    rgtarmrel_rew: bool = True
