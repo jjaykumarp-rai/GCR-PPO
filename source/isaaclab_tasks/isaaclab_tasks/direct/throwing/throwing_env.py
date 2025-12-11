@@ -266,9 +266,9 @@ class ThrowingEnv(DirectRLEnv):
         for i, pos_idx in enumerate(array_indices):
             full_finger_actions[:, pos_idx] = finger_positions[i]
 
-        # Set finger actions to 0 if hand is open (using smoothed actions)
-        hand_open_mask = (self._actions[:, -1] >= 0)
-        full_finger_actions[~hand_open_mask] = 0
+        # Close fingers when grip action <= 0, open when > 0
+        hand_open_mask = (self._actions[:, -1] > 0)
+        full_finger_actions[hand_open_mask] = 0
 
         # Append to _processed_actions
         self._processed_actions = torch.cat([self._processed_actions, full_finger_actions], dim=1)
@@ -550,6 +550,9 @@ class ThrowingEnv(DirectRLEnv):
 
         self._actions[env_ids] = 0.0
         self._previous_actions[env_ids] = 0.0
+        # start episodes with hand closed to hold the ball
+        self._actions[env_ids, -1] = -1.0
+        self._previous_actions[env_ids, -1] = -1.0
 
         self._sample_throwing_commands(env_ids)
 
@@ -563,9 +566,12 @@ class ThrowingEnv(DirectRLEnv):
         self.released_ball_t[env_ids] = -1
         # Reset robot state
         joint_pos = self._robot.data.default_joint_pos[env_ids] 
-        #joint_pos[:,[1,3,5, 7,9, 11]] += torch.zeros_like(joint_pos[:,[1,3,5, 7,9, 11]]).uniform_(-self.cfg.arm_dr_range, self.cfg.arm_dr_range) # hand .uniform_(-1,1)
-        joint_pos[:,[5,6,9,10,13,14,17,18,21,22]] += torch.zeros_like(joint_pos[:,[5,6,9,10,13,14,17,18,21,22]]).uniform_(-0.3, 0.3) # hand .uniform_(-1,1)
+        # Close finger joints firmly and add mild noise elsewhere
+        finger_indices = [5,6,9,10,13,14,17,18,21,22]
+        closed_fingers = torch.tensor([-0.7, 1.0, -0.7, 1.0, -0.7, 1.0, -0.7, 1.0, -0.7, 1.0], device=self.device)
+        joint_pos[:, finger_indices] = closed_fingers
         joint_pos += torch.zeros_like(joint_pos).uniform_(-0.05, 0.05)
+        joint_pos[:, finger_indices] = closed_fingers  # keep fingers closed after noise
 
         joint_vel = self._robot.data.default_joint_vel[env_ids]
         default_root_state = self._robot.data.default_root_state[env_ids]
@@ -588,15 +594,13 @@ class ThrowingEnv(DirectRLEnv):
         object_default_state = self.sphere_object.data.default_root_state.clone()[env_ids]
         #object_default_state[:, 7:] = torch.zeros_like(self.sphere_object.data.default_root_state[env_ids, 7:])
         # initialise ball in hand
+        hand_positions = self._robot.data.body_pos_w[:, [-1], :][env_ids].reshape(len(env_ids),3)
         finger_positions = self._robot.data.body_pos_w[:, [-1,-4,-5], :][env_ids]
         finger_positions = torch.mean(finger_positions, dim=1).reshape(len(env_ids),3)
-        hand_positions = self._robot.data.body_pos_w[:, [-1], :][env_ids].reshape(len(env_ids),3)
-        #hand_positions[:,2] += 1
-        vector_AB = finger_positions - hand_positions 
-        distance_AB = torch.norm(vector_AB,dim=1).reshape(len(env_ids),1) # 
-        direction = vector_AB/distance_AB
-        distance_AC = 0. * distance_AB
-        position_c = finger_positions#hand_positions + direction*distance_AC
+        vector_AB = finger_positions - hand_positions
+        distance_AB = torch.norm(vector_AB, dim=1, keepdim=True)
+        safe_direction = torch.where(distance_AB > 1e-4, vector_AB / distance_AB, torch.tensor([0.0, 0.0, 1.0], device=self.device))
+        position_c = hand_positions + safe_direction * 0.02  # place slightly in front of palm
         object_default_state[:, 0:3] += position_c
         object_default_state[:, 7:] = self._robot.data.body_vel_w[:, [-1], :][env_ids].reshape(len(env_ids),6)
         self.sphere_object.write_root_state_to_sim(object_default_state, env_ids)
