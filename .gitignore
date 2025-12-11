@@ -2,6 +2,12 @@
 logs/*
 outputs/
 
+*.pt
+*.pth
+*.ckpt
+*.log
+*.mp4
+
 # Python bytecode caches
 __pycache__/
 *.py[cod]
