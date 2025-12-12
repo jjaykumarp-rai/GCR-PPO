@@ -92,26 +92,17 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
             key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
             for key in [
                 "throwing",
-                # "roll",
                 "stability",
                 "action_rate_l2",
                 "dof_torques_l2",
                 "dof_acc_l2",
-                "joint_vel_limit",
-                "termination",
-                "direction",
-                "overthrow",
-                "post_release_smooth",
-                "underthrow",
-                "target_hit",
-                "energy_rew",
                 "ballrel_rew",
             ]
         }
 
         self.reward_components = len(self._episode_sums.keys())
         self.reward_component_names = list(self._episode_sums.keys())
-        self.reward_component_task_rew = ["throwing", "ballrel_rew", "direction"]
+        self.reward_component_task_rew = ["throwing", "ballrel_rew"]
 
         # if self.cfg.baseh_rew:
         #     self.reward_component_names += ["baseh_rew"]
@@ -397,15 +388,14 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
             f"Alpha DOF mismatch: main={num_main}, fingers={num_fingers}, total={num_dofs}"
         )
 
-        # Start from default joint positions (full DOF vector, in Isaac DOF order)
-        default_all = self._robot.data.default_joint_pos.clone()
-        self._processed_actions = default_all.clone()
+        # Start from current joint positions (full DOF vector, in Isaac DOF order)
+        current_all = self._robot.data.joint_pos.clone()
+        self._processed_actions = current_all.clone()
 
         # ---------------- Main joints (torso + arms) ----------------
-        # First num_main action dims drive these joints
-        default_main = default_all[:, main_idx]   # (num_envs, 15)
-        delta_main = self.cfg.action_scale * self._actions[:, :num_main]
-        self._processed_actions[:, main_idx] = default_main + delta_main
+        # Interpret main actions as joint velocities (rad/s) and integrate to position targets.
+        delta_main = self.cfg.action_scale * self._actions[:, :num_main] * self.step_dt
+        self._processed_actions[:, main_idx] = current_all[:, main_idx] + delta_main
 
         # ---------------- Finger joints (gripper-like) ----------------
         # Actions layout:
@@ -434,6 +424,19 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
             limits = self._robot.data.joint_pos_limits  # (num_envs, num_dofs, 2)
             lower, upper = limits[:, :, 0], limits[:, :, 1]
             self._processed_actions = torch.clamp(self._processed_actions, lower, upper)
+
+        # Velocity-safe targets: clamp step-to-step delta to joint velocity limits.
+        vel_limits = getattr(self._robot.data, "joint_vel_limits", None)
+        if vel_limits is None:
+            vlim = getattr(self.cfg, "joint_velocity_limit", None)
+            if vlim is not None:
+                vel_limits = torch.full_like(self._robot.data.joint_pos, float(vlim))
+        if vel_limits is not None:
+            max_delta = vel_limits * self.step_dt
+            current_pos = self._robot.data.joint_pos
+            lower = current_pos - max_delta
+            upper = current_pos + max_delta
+            self._processed_actions = torch.max(torch.min(self._processed_actions, upper), lower)
 
         # ------------------------------------------------------------
         # Optional: keep G1-style rendering hook
@@ -468,8 +471,6 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
             # Reuse the canonical main joint ordering from alpha_utils:
             # [TJ1, RJ1..RJ7, LJ1..LJ7]
             self._non_finger_joint_ids = self._main_joint_ids.to(self.device)
-
-        self._previous_actions = self._actions.clone()
 
         # Joint state (exclude finger DOFs), in G1-compatible order
         idx = self._non_finger_joint_ids
@@ -957,14 +958,17 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
         vel_limit_penalty = vel_penalty + joint_vel_violation.float() * self.cfg.joint_velocity_termination_penalty
 
         # -------------------------------------------------------------------------- #
-        # Smoothness / effort penalties (same as G1)
+        # Smoothness / effort penalties (use mean over main joints to avoid huge sums)
         # -------------------------------------------------------------------------- #
-        action_rate = torch.sum(torch.square(self._actions - self._previous_actions), dim=1)
-        joint_torques = torch.sum(torch.square(self._robot.data.applied_torque), dim=1)
-        joint_accel = torch.sum(torch.square(self._robot.data.joint_acc), dim=1)
+        main_ids = self._non_finger_joint_ids
+        main_count = max(1, main_ids.shape[0])
+
+        action_rate = torch.mean(torch.square(self._actions[:, : main_count] - self._previous_actions[:, : main_count]), dim=1)
+        joint_torques = torch.mean(torch.square(self._robot.data.applied_torque[:, main_ids]), dim=1)
+        joint_accel = torch.mean(torch.square(self._robot.data.joint_acc[:, main_ids]), dim=1)
         # Electricity proxy only on torso + arm joints to match action layout (first 15 dims).
-        main_joint_vel = self._robot.data.joint_vel[:, self._non_finger_joint_ids]
-        electricity_cost = torch.sum(torch.abs(self._actions[:, : main_joint_vel.shape[1]] * main_joint_vel), dim=1)
+        main_joint_vel = self._robot.data.joint_vel[:, main_ids]
+        electricity_cost = torch.mean(torch.abs(self._actions[:, : main_joint_vel.shape[1]] * main_joint_vel), dim=1)
 
         # Reward for releasing the ball (sparse bonus when release is detected)
         ball_release_rew = torch.zeros(self.num_envs, device=self.device)
@@ -988,27 +992,21 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
 
         rewards = {
             "throwing": torch.max(torch.zeros_like(self.throwing_reward), self.throwing_reward.clone())
-            * self.cfg.throwing_reward_scale
-            * self.max_episode_length_s,
+            * self.cfg.throwing_reward_scale,
             "stability": stability_rew * self.cfg.stability_reward_scale * self.max_episode_length_s,
             "action_rate_l2": action_rate * self.cfg.action_rate_reward_scale * self.step_dt,
             "dof_torques_l2": joint_torques * self.cfg.joint_torque_reward_scale * self.step_dt,
             "dof_acc_l2": joint_accel * self.cfg.joint_accel_reward_scale * self.step_dt,
-            "joint_vel_limit": vel_limit_penalty,
-            "termination": termination_term,
-            "direction": direction_rew * self.cfg.direction_reward_scale,
-            "overthrow": overthrow_penalty,
-            "post_release_smooth": post_release_smooth,
-            "underthrow": underthrow_penalty,
-            "target_hit": target_hit_reward,
-            "energy_rew": electricity_cost * self.cfg.energy_reward_scale * self.step_dt,
             "ballrel_rew": ball_release_rew * self.cfg.ball_release_reward_scale,
         }
 
-        #reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
         # Logging
         for key, value in rewards.items():
             self._episode_sums[key] += value
+
+        # Track previous actions for next step's action_rate
+        self._previous_actions = self._actions.clone()
+
         return torch.stack(list(rewards.values())).T
 
 
@@ -1227,8 +1225,8 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
         hand_quat = self._robot.data.body_quat_w[env_ids, self._throw_hand_body_id]
         hand_vel = self._robot.data.body_vel_w[env_ids, self._throw_hand_body_id]
 
-        # Default: place ball a few cm out of the palm using hand orientation
-        forward_offset_local = torch.tensor([0.0, 0.05, 0.02], device=self.device)
+        # Default: place ball slightly farther out of the palm to avoid initial intersections
+        forward_offset_local = torch.tensor([0.0, 0.08, 0.04], device=self.device)
         forward_offset_world = self._quat_apply(hand_quat, forward_offset_local.expand(len(env_ids), -1))
         ball_offset = forward_offset_world
 
@@ -1243,7 +1241,7 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
             mask = dist.squeeze(-1) > 1e-4
             if mask.any():
                 dir_norm = offset[mask] / dist[mask]
-                ball_offset[mask] = dir_norm * 0.03  # 3 cm toward fingertips
+                ball_offset[mask] = dir_norm * 0.05  # push ~5 cm toward fingertips
 
         ball_pos = hand_pos + ball_offset
         ball_state[:, :3] = ball_pos
@@ -1296,18 +1294,27 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
                 phi_low, phi_high = -self.target_half_fov_rad, 0.0
             phi_samples = torch.zeros_like(self.throwing_commands[command_ids, 2]).uniform_(phi_low, phi_high)
 
-        # Sample distance and height, then derive polar elevation (theta)
-        dist_min, dist_max = self.distance_range
-        z_min, z_max = self.current_target_height_range
-        margin = 0.05
+        # Fixed-target overrides for overfitting/debug. Set cfg.fixed_* to use constants.
+        fixed_dist = getattr(self.cfg, "fixed_throw_dist", None)
+        fixed_height = getattr(self.cfg, "fixed_target_height", None)
 
-        z_samples = torch.zeros_like(self.throwing_commands[command_ids, 0]).uniform_(z_min, z_max)
-        z_clamped = torch.clamp(z_samples, min=0.0, max=dist_max - margin)
+        if fixed_dist is not None:
+            dist_final = torch.full_like(self.throwing_commands[command_ids, 0], float(fixed_dist))
+        else:
+            dist_min, dist_max = self.distance_range
+            margin = 0.05
+            dist_samples = torch.zeros_like(self.throwing_commands[command_ids, 0]).uniform_(dist_min, dist_max)
+            dist_final = dist_samples
 
-        dist_samples = torch.zeros_like(self.throwing_commands[command_ids, 0]).uniform_(dist_min, dist_max)
-        dist_final = torch.max(dist_samples, z_clamped + margin)
+        if fixed_height is not None:
+            z_clamped = torch.full_like(self.throwing_commands[command_ids, 0], float(fixed_height))
+        else:
+            z_min, z_max = self.current_target_height_range
+            margin = 0.05
+            z_samples = torch.zeros_like(self.throwing_commands[command_ids, 0]).uniform_(z_min, z_max)
+            z_clamped = torch.clamp(z_samples, min=0.0, max=dist_final.max() - margin)
 
-        theta_cos = torch.clamp(z_clamped / dist_final, -1.0, 1.0)
+        theta_cos = torch.clamp(z_clamped / torch.clamp(dist_final, min=1e-3), -1.0, 1.0)
 
         if self.cfg.distance_throw:
             # Keep previous distance-throw semantics (purely forward, flat)

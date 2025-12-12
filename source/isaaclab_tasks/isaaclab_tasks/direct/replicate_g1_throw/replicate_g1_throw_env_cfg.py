@@ -224,7 +224,7 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     )
 
     # scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=8.0, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=4.0, replicate_physics=True)
 
     # events
     events: EventCfg = EventCfg()
@@ -236,13 +236,13 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     # robot
     robot: ArticulationCfg = ALPHA_CFG.replace(prim_path="/World/envs/env_.*/Robot")
 
-    throwing_reward_scale = 5.0  # boost task reward so it dominates small penalties
+    throwing_reward_scale = 0.75  # tuned to keep mean reward ~10-50
     throw_height_reward_scale = 2.0
     action_rate_reward_scale = -1e-4  # softer penalty on action deltas
     joint_torque_reward_scale = -1e-7  # reduce torque penalty by ~25x
     joint_accel_reward_scale = -2.5e-10  # reduce accel penalty by ~100x to avoid overwhelming reward
     energy_reward_scale = -1e-4  # mild energy penalty
-    ball_release_reward_scale = 0.5  # bonus when the ball is released
+    ball_release_reward_scale = 0.1  # bonus when the ball is released
     # Early-termination guardrail for excessive joint speeds
     joint_velocity_limit = 80.0
     joint_velocity_termination_penalty = -1.0
@@ -258,7 +258,7 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     underthrow_penalty = -0.5
     no_release_timeout_frac = 0.5
     target_hit_radius = 0.1
-    target_hit_reward = 5.0
+    target_hit_reward = 0.75
     #throw_time_reward_scale = 1.0#1.0
     #zvel_reward_scale = 0.75
 
@@ -274,7 +274,10 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     r_throw_thresh = 0.5
 
     # target placement controls
-    min_throw_dist = 2.0  # start curriculum close, then expand outward
+    # Set these for fixed-target overfitting tests; set to None to re-enable sampling/curriculum.
+    fixed_throw_dist: float | None = None  # fixed distance for debug/overfit tests
+    fixed_target_height: float | None = None  # e.g., 0.5 for fixed height
+    min_throw_dist = 3.0  # start curriculum close, then expand outward
     target_fov_deg = 30.0
     target_height_range = (0.1, 1.0)
     # Curriculum controls for distance/height expansion
@@ -290,7 +293,7 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     use_stability = True # dont need
     no_proj_motion = True
     nonsparse_stability_reward = False # so that stability reward contains only collision and ball not thrown condition
-    max_throw_dist = 7
+    max_throw_dist = 6
 
     # ---------------------------------------------------------------------
     # things I changed for migration from throwing to replicate_g1_throw

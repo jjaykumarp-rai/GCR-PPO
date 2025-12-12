@@ -10,33 +10,32 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 
 @configclass
 class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
-    num_steps_per_env = 26
+    num_steps_per_env = 64
     max_iterations = 12000
     save_interval = 10
+    empirical_normalization = True
     experiment_name = "replicate_g1_throw"
-    empirical_normalization = False
+
     policy = RslRlPpoActorCriticCfg(
         class_name="ActorCritic",
-        init_noise_std=0.5,
-        # actor_hidden_dims=[256, 128, 64],
-        # critic_hidden_dims=[256, 128, 64],
-        actor_hidden_dims=[768, 512, 256],
-        critic_hidden_dims=[768, 512, 256],
+        init_noise_std=0.6,                 # slightly more exploration early
+        actor_hidden_dims=[512, 256, 256],  # smaller than yours; more stable
+        critic_hidden_dims=[512, 256, 256],
         activation="elu",
     )
+
     algorithm = RslRlPpoAlgorithmCfg(
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.15,
-        entropy_coef=0.025,
+        entropy_coef=0.001,
         num_learning_epochs=5,
         num_mini_batches=6,
-        learning_rate=1.0e-3,
+        learning_rate=3e-4,
         schedule="adaptive",
         gamma=0.99,
-        lam=0.92,
+        lam=0.95,
         desired_kl=0.02,
         max_grad_norm=1.0,
     )
-
     
