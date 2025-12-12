@@ -419,6 +419,12 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
         # Write finger targets into the correct DOF slots
         self._processed_actions[:, finger_idx] = finger_targets
 
+        # Clip processed targets to joint limits (position and velocity-safe).
+        pos_limits = getattr(self._robot.data, "joint_pos_limits", None)
+        if pos_limits is not None:
+            lower, upper = pos_limits[:, :, 0], pos_limits[:, :, 1]
+            self._processed_actions = torch.clamp(self._processed_actions, lower, upper)
+
         # Clip commanded joint positions to the joint limits from sim data.
         if getattr(self._robot.data, "joint_pos_limits", None) is not None:
             limits = self._robot.data.joint_pos_limits  # (num_envs, num_dofs, 2)
