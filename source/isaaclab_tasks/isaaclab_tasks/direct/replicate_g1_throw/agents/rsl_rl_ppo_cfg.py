@@ -18,6 +18,8 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     policy = RslRlPpoActorCriticCfg(
         class_name="ActorCritic",
         init_noise_std=0.5,
+        # actor_hidden_dims=[256, 128, 64],
+        # critic_hidden_dims=[256, 128, 64],
         actor_hidden_dims=[768, 512, 256],
         critic_hidden_dims=[768, 512, 256],
         activation="elu",
@@ -26,7 +28,7 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.15,
-        entropy_coef=0.0003552,
+        entropy_coef=0.025,
         num_learning_epochs=5,
         num_mini_batches=6,
         learning_rate=1.0e-3,

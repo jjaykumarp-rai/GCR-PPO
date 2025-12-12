@@ -236,11 +236,29 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     # robot
     robot: ArticulationCfg = ALPHA_CFG.replace(prim_path="/World/envs/env_.*/Robot")
 
-    throwing_reward_scale = 2.05#1.0
+    throwing_reward_scale = 5.0  # boost task reward so it dominates small penalties
     throw_height_reward_scale = 2.0
-    action_rate_reward_scale = -1e-3
-    joint_torque_reward_scale = -2.5e-6
-    joint_accel_reward_scale = -2.5e-8
+    action_rate_reward_scale = -1e-4  # softer penalty on action deltas
+    joint_torque_reward_scale = -1e-7  # reduce torque penalty by ~25x
+    joint_accel_reward_scale = -2.5e-10  # reduce accel penalty by ~100x to avoid overwhelming reward
+    energy_reward_scale = -1e-4  # mild energy penalty
+    ball_release_reward_scale = 0.5  # bonus when the ball is released
+    # Early-termination guardrail for excessive joint speeds
+    joint_velocity_limit = 80.0
+    joint_velocity_termination_penalty = -1.0
+    joint_velocity_penalty_scale = -1e-3
+    termination_success_reward = 1.0
+    termination_failure_penalty = -1.0
+    direction_reward_scale = 0.5
+    overthrow_margin = 0.5
+    overthrow_penalty = -0.5
+    post_release_window_s = 0.25
+    post_release_accel_penalty_scale = -1e-9
+    underthrow_margin = 0.5
+    underthrow_penalty = -0.5
+    no_release_timeout_frac = 0.5
+    target_hit_radius = 0.1
+    target_hit_reward = 5.0
     #throw_time_reward_scale = 1.0#1.0
     #zvel_reward_scale = 0.75
 
@@ -259,6 +277,11 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     min_throw_dist = 2.0  # start curriculum close, then expand outward
     target_fov_deg = 30.0
     target_height_range = (0.1, 1.0)
+    # Curriculum controls for distance/height expansion
+    initial_max_throw_dist = 3.0
+    curriculum_distance_increment = 0.05
+    initial_target_height_range = (0.1, 0.3)
+    curriculum_height_increment = 0.02
     # Rotate target heading relative to the world forward (+X). Alpha faces +Y, so add 90 deg.
     target_heading_offset_deg = 90.0
     robot_yaw_offset_deg = 0.0
@@ -275,6 +298,9 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
 
     distance_throw = False
     arm_only = False
+
+    # Which hand throws (affects target placement side and grasp link choice)
+    throw_hand_side = "right"
 
     # need to check if this is required
     roll_reward_scale =  0.43
