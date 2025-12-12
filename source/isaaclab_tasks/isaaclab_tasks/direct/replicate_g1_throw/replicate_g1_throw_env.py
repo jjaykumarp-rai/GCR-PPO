@@ -431,18 +431,6 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
             lower, upper = limits[:, :, 0], limits[:, :, 1]
             self._processed_actions = torch.clamp(self._processed_actions, lower, upper)
 
-        # Velocity-safe targets: clamp step-to-step delta to joint velocity limits.
-        vel_limits = getattr(self._robot.data, "joint_vel_limits", None)
-        if vel_limits is None:
-            vlim = getattr(self.cfg, "joint_velocity_limit", None)
-            if vlim is not None:
-                vel_limits = torch.full_like(self._robot.data.joint_pos, float(vlim))
-        if vel_limits is not None:
-            max_delta = vel_limits * self.step_dt
-            current_pos = self._robot.data.joint_pos
-            lower = current_pos - max_delta
-            upper = current_pos + max_delta
-            self._processed_actions = torch.max(torch.min(self._processed_actions, upper), lower)
 
         # ------------------------------------------------------------
         # Optional: keep G1-style rendering hook
