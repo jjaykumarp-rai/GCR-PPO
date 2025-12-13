@@ -97,12 +97,13 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
                 "dof_torques_l2",
                 "dof_acc_l2",
                 "ballrel_rew",
+                "vel_align_rew",
             ]
         }
 
         self.reward_components = len(self._episode_sums.keys())
         self.reward_component_names = list(self._episode_sums.keys())
-        self.reward_component_task_rew = ["throwing", "ballrel_rew"]
+        self.reward_component_task_rew = ["throwing", "ballrel_rew", "vel_align_rew"]
 
         # if self.cfg.baseh_rew:
         #     self.reward_component_names += ["baseh_rew"]
@@ -175,6 +176,7 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
 
         self.target_half_fov_rad = min(math.radians(self.cfg.target_fov_deg) / 2.0, math.pi)
         self.target_heading_offset_rad = math.radians(self.cfg.target_heading_offset_deg)
+        # Use configured robot yaw offset; do not rotate the scene.
         self.robot_yaw_offset_rad = math.radians(self.cfg.robot_yaw_offset_deg)
         self._sample_throwing_commands(torch.arange(self.num_envs, device=self.device))
         self.released_ball_t = torch.zeros((self.num_envs), device=self.device)-1
@@ -546,462 +548,128 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
         return observations
 
 
-
-    # def _get_rewards(self) -> torch.Tensor:
-    #     # throwing reward:
-    #     # measure euclidean distance between ball and hand 
-    #     if self.cfg.no_proj_motion:
-    #         ##########  TODO: Need to change on alpha  ##########
-    #         dist = torch.norm(self.sphere_object.data.body_pos_w[:, 0, 0:3] - self._robot.data.body_pos_w[:, [-15], :].squeeze(1), dim=1) 
-    #         throwing_reward_condition = (dist > 0.25)
-
-    #         target_positions = self.target_positions[:] + self._terrain.env_origins[:]
-    #         targ_dist = torch.norm(self.sphere_object.data.body_pos_w[:, 0, 0:3] - target_positions, dim=1).reshape(self.num_envs)
-    #         on_ground = self.sphere_object.data.body_pos_w[:, 0, 2] < 0.05
-
-    #         # set to targ_dist if ball distances -1 or if targ_distance smaller than the current amount (excluding -1)
-    #         self.ball_distances[:] = torch.where(~on_ground & ((self.ball_distances[:] == -1) | (targ_dist < self.ball_distances[:])), targ_dist, self.ball_distances[:])
-    #         env_ids = torch.nonzero((self.reset_buf == 1) & throwing_reward_condition).reshape(-1)
-    #         self.throwing_reward[:] = 0
-    #         self.throwing_reward[env_ids] = self.ball_distances[env_ids]/self.throwing_commands[env_ids,0]
-    #         self.throwing_reward[env_ids] = 1 - torch.min(torch.tensor(1.), self.throwing_reward[env_ids])
-    #         assert False
-    #     else:
-    #         dist = torch.norm(self.sphere_object.data.body_pos_w[:, 0, 0:3] - self._robot.data.body_pos_w[:, [-15], :].squeeze(1), dim=1) 
-    #         throwing_reward_condition = (dist > 0.25) & (~self.throwing_reward_given)
-    #         self.not_released_ball &= (dist <= 0.25)
-    #         env_ids = torch.nonzero(throwing_reward_condition).reshape(-1)
-    #         self.throwing_reward[:] = 0
-    #         if len(env_ids) > 0: 
-    #             self.throwing_reward[env_ids], self.landing_time[env_ids] = self.check_ball_displacement(env_ids)
-    #             self.throwing_reward[env_ids] = 1 - self.throwing_reward[env_ids]
-    #             self.throwing_reward_given[env_ids] = True
-    #             self.landing_time[env_ids] += self.episode_length_buf[env_ids] * self.step_dt
-    #             ball_data = self.sphere_object.data.body_state_w[env_ids, 0, 9] # z vel
-    #     ball_released_envs = env_ids
-
-    #     # roll reward
-    #     # w,x,y,z = self._robot.data.root_quat_w.T
-    #     # roll = torch.atan2(2.0 * (w*x + y*z), 1.0 - 2.0 * (x**2 + y**2))
-    #     # make sure roll not nan
-    #     # roll = torch.where(torch.isnan(roll), torch.zeros_like(roll), roll)
-    #     # roll_rew = (-1/(1+torch.exp(-10*(torch.abs(roll)-0.3))))*(1-torch.exp(-(torch.abs(roll)-0.1)/0.1))
-    #     # stability reward
-    #     # base_height_cond = (self._robot.data.root_pos_w[:, 2] <= self.min_base_height) # 0.42 for anymal
-        
-    #     ##########  TODO: Need to change on alpha  ##########
-    #     hand_positions = self._robot.data.body_pos_w[:, [-1], :].reshape(self.num_envs,3) # 22 for anymal
-    #     ball_positions = self.sphere_object.data.root_pos_w.clone()
-    #     ball_not_thrown_cond = (torch.norm((hand_positions-ball_positions),dim=1) <= 0.25) & (self.reset_buf == 1) 
-        
-    #     #bad_throw_cond = (self.throwing_reward > -1) & (self.throwing_reward < 0.05)
-
-    #     # collision detection
-    #     # "finger" or "cylinder"
-    #     # include all ids except feet
-    #     first_contact = self._contact_sensor.compute_first_contact(self.step_dt)#[:,non_feet_ids]
-    #     mask = torch.where(torch.norm((hand_positions-ball_positions),dim=1) <= 0.25, torch.zeros(1,device=self.device),torch.ones(1,device=self.device))
-
-    #     first_contact[:,self.hand_ids] &= mask.view(-1,1).expand(-1, len(self.hand_ids)).to(torch.bool) # filter out collisions with ball touching the hand
-    #     collision = torch.sum(first_contact[:,self.non_feet_ids],dim=1) > 0
-
-    #     self.stability_penalty_this_ep |= (ball_not_thrown_cond | collision) 
-    #     stability_rew = ((self.reset_buf == 1) & (~self.stability_penalty_this_ep)).float()
-    #     # if self.cfg.nonsparse_stability_reward:
-    #         # stability_rew = ((~(base_height_cond | ball_not_thrown_cond | collision)).float() / self.max_episode_length_s) * self.step_dt
-
-    #     action_rate = torch.sum(torch.square(self._actions - self._previous_actions), dim=1)
-    #     # joint torques
-    #     joint_torques = torch.sum(torch.square(self._robot.data.applied_torque), dim=1)
-    #     # joint acceleration
-    #     joint_accel = torch.sum(torch.square(self._robot.data.joint_acc), dim=1)
-
-    #     rewards = {
-    #         "throwing": torch.max(torch.zeros_like(self.throwing_reward),self.throwing_reward.clone()) * self.cfg.throwing_reward_scale * self.max_episode_length_s,
-    #         # "roll": roll_rew * self.cfg.roll_reward_scale * self.step_dt,
-    #         "stability": stability_rew * self.cfg.stability_reward_scale * self.max_episode_length_s,
-    #         "action_rate_l2": action_rate * self.cfg.action_rate_reward_scale * self.step_dt,
-    #         "dof_torques_l2": joint_torques * self.cfg.joint_torque_reward_scale * self.step_dt,
-    #         "dof_acc_l2": joint_accel * self.cfg.joint_accel_reward_scale * self.step_dt,
-    #     }
-
-    #     # if self.cfg.baseh_rew:
-    #     #     ##########  TODO: Need to change on alpha  ##########
-    #     #     base_height = self._robot.data.body_pos_w[:, self._hip_ids[0], 2] # 0.99 - 1.4 (jumping high)
-    #     #     bounds_list = [[0.35,0.4],[0.4,0.45],[0.45,0.5],[0.5,0.55],[0.55,0.6]] # starts around 0.6
-    #     #     selected_bounds = bounds_list[self.baseh_rew_vec[0].int()]  # (num_envs, 2)
-    #     #     min_value, max_value = selected_bounds[0], selected_bounds[1]
-    #     #     reward_term = ((base_height >= min_value) & (base_height <= max_value)).float()
-    #     #     reward_term *= self.step_dt
-    #     #     rewards["baseh_rew"] = reward_term
-    #     #     within  = (base_height >= min_value) & (base_height <= max_value)
-    #     #     den = torch.ones_like(within).sum()                        # total valid feet this step
-    #     #     pct = 100.0 * within.float().sum() / den                      # scalar %
-    #     #     self.extras["log"]["base_height_success_pct"] = pct
-
-    #     r_scale = 1.0
-    #     if self.cfg.energy_rew:
-    #         ##########  TODO: Need to change on alpha  ##########
-    #         electricity_cost = torch.sum(
-    #             torch.abs(self._actions[:,:-1] * self._robot.data.joint_vel[:,:23]),
-    #             dim=-1,
-    #         )
-    #         energy_vals_tensor = [[40,70],[70,100],[100,130],[130,160],[160,200]] # 26 -> 140
-    #         selected_bounds = energy_vals_tensor[self.energy_rew_vec[0].int()]  # (num_envs, 2)
-    #         min_energy = selected_bounds[0]
-    #         max_energy = selected_bounds[1]
-    #         reward_electricity = ((electricity_cost >= min_energy) & (electricity_cost <= max_energy)).float()
-    #         reward_electricity *= self.step_dt * r_scale
-    #         rewards["energy_rew"] = reward_electricity
-    #         within  = (electricity_cost >= min_energy) & (electricity_cost <= max_energy)
-    #         den = torch.ones_like(within).sum()                        # total valid feet this step
-    #         pct = 100.0 * within.float().sum() / den                      # scalar %
-    #         self.extras["log"]["energy_success_pct"] = pct
-
-    #     if self.cfg.ballrel_rew:
-    #         # episode_length_buf is in steps; multiply by step_dt (s/step) to get seconds
-    #         if len(ball_released_envs) == 0:
-    #             reward_term = torch.zeros(self.num_envs, device=self.device)
-    #             rewards["ballrel_rew"] = reward_term
-    #             self.extras["log"]["ballrel_success_pct"] = torch.tensor(0., device=self.device)
-    #         else:
-    #             ball_released_time = self.episode_length_buf[ball_released_envs].float() * self.step_dt
-    #             measured_val = ball_released_time # around 0.2
-    #             bounds_list = [[0.,0.3],[0.3,0.6],[0.6,0.9],[0.9,1.2],[1.2,1.5]] # starts around 0.6
-    #             selected_bounds = bounds_list[self.ballrel_rew_vec[0].int()]  # (num_envs, 2)
-    #             min_value, max_value = selected_bounds[0], selected_bounds[1]
-    #             reward_term = ((measured_val >= min_value) & (measured_val <= max_value)).float()
-    #             reward_term *= r_scale
-    #             reward_term_full = torch.zeros(self.num_envs, device=self.device)
-    #             reward_term_full[ball_released_envs] = reward_term
-    #             rewards["ballrel_rew"] = reward_term_full
-    #             within  = (measured_val >= min_value) & (measured_val <= max_value)
-    #             den = torch.ones_like(within).sum()                        # total valid feet this step
-    #             pct = 100.0 * within.float().sum() / den                      # scalar %
-    #             self.extras["log"]["ballrel_success_pct"] = pct
-
-    #     # if self.cfg.bodymo_rew:
-    #     #     if len(ball_released_envs) == 0:
-    #     #         reward_term = torch.zeros(self.num_envs, device=self.device)
-    #     #         rewards["bodymo_rew"] = reward_term
-    #     #         self.extras["log"]["bodymo_success_pct"] = torch.tensor(0., device=self.device)
-    #     #     else:
-    #     #         ##########  TODO: Need to change on alpha  ##########
-    #     #         measured_val = torch.norm(self._robot.data.body_vel_w[:, self._hip_ids[0], :3], dim=-1) # around 2
-    #     #         bounds_list = [[0.,1.0],[1.0,2],[2,3],[3,4],[4,5]] # starts around 0.6
-    #     #         selected_bounds = bounds_list[self.bodymo_rew_vec[0].int()]  # (num_envs, 2)
-    #     #         min_value, max_value = selected_bounds[0], selected_bounds[1]
-    #     #         reward_term = ((measured_val >= min_value) & (measured_val <= max_value)).float()
-    #     #         reward_term *= r_scale
-    #     #         reward_term_full = torch.zeros(self.num_envs, device=self.device)
-    #     #         reward_term_full[ball_released_envs] = reward_term[ball_released_envs]
-    #     #         rewards["bodymo_rew"] = reward_term_full
-    #     #         within  = (measured_val >= min_value) & (measured_val <= max_value)
-    #     #         den = torch.ones_like(within).sum()                        # total valid feet this step
-    #     #         pct = 100.0 * within.float().sum() / den                      # scalar %
-    #     #         self.extras["log"]["bodymo_success_pct"] = pct
-
-    #     if self.cfg.lftarm_rew:
-    #         ##########  TODO: Need to change on alpha  ##########
-    #         measured_val = self._robot.data.body_pos_w[:, self.left_hand_ids[0], 2] # around 0.8
-    #         bounds_list = [[0.6,0.8],[0.8,1.0],[1.0,1.2],[1.2,1.4],[1.4,1.6]] # starts around 0.6
-    #         selected_bounds = bounds_list[self.lftarm_rew_vec[0].int()]  # (num_envs, 2)
-    #         min_value, max_value = selected_bounds[0], selected_bounds[1]
-    #         reward_term = ((measured_val >= min_value) & (measured_val <= max_value)).float()
-    #         reward_term *= self.step_dt * r_scale
-    #         rewards["lftarm_rew"] = reward_term
-    #         within  = (measured_val >= min_value) & (measured_val <= max_value)
-    #         den = torch.ones_like(within).sum()                        # total valid feet this step
-    #         pct = 100.0 * within.float().sum() / den                      # scalar %
-    #         self.extras["log"]["lftarm_success_pct"] = pct
-    #     if self.cfg.rgtarmrel_rew:
-    #         if len(ball_released_envs) == 0:
-    #             reward_term = torch.zeros(self.num_envs, device=self.device)
-    #             rewards["rgtarmrel_rew"] = reward_term
-    #             self.extras["log"]["rgtarmrel_success_pct"] = torch.tensor(0., device=self.device)
-    #         else:
-    #             ##########  TODO: Need to change on alpha  ##########
-    #             measured_val = self._robot.data.body_pos_w[:, self.right_hand_ids[0], 2] # around 0.5
-    #             bounds_list = [[0.3,0.4],[0.4,0.5],[0.5,0.6],[0.6,0.7],[0.7,0.8]] # starts around 0.6
-    #             selected_bounds = bounds_list[self.rgtarmrel_rew_vec[0].int()]  # (num_envs, 2)
-    #             min_value, max_value = selected_bounds[0], selected_bounds[1]
-    #             reward_term = ((measured_val >= min_value) & (measured_val <= max_value)).float()
-    #             reward_term *= r_scale
-    #             reward_term_full = torch.zeros(self.num_envs, device=self.device)
-    #             reward_term_full[ball_released_envs] = reward_term[ball_released_envs]
-    #             rewards["rgtarmrel_rew"] = reward_term_full
-    #             within  = (measured_val >= min_value) & (measured_val <= max_value)
-    #             den = torch.ones_like(within).sum()                        # total valid feet this step
-    #             pct = 100.0 * within.float().sum() / den                      # scalar %
-    #             self.extras["log"]["rgtarmrel_success_pct"] = pct
-
-    #     #reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
-    #     # Logging
-    #     for key, value in rewards.items():
-    #         self._episode_sums[key] += value
-    #     return torch.stack(list(rewards.values())).T
-
-    def _check_joint_velocity_violation(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """Check non-finger joints against per-joint velocity limits.
-
-        Returns:
-            violation: (num_envs,) bool if any main joint exceeds limit.
-            exceed: (num_envs, num_joints) amount over limit (>=0).
-        """
-        limit = getattr(self.cfg, "joint_velocity_limit", None)
-
-        self._build_alpha_joint_indices()
-        joint_vel = torch.abs(self._robot.data.joint_vel[:, self._non_finger_joint_ids])
-
-        # Use sim-provided limits if available; else fallback to scalar cfg.
-        data_limits = getattr(self._robot.data, "joint_vel_limits", None)
-        if data_limits is not None:
-            limit_tensor = data_limits[:, self._non_finger_joint_ids]
-        elif limit is not None:
-            limit_tensor = torch.full_like(joint_vel, float(limit))
-        else:
-            limit_tensor = torch.full_like(joint_vel, torch.inf)
-
-        exceed = torch.clamp(joint_vel - limit_tensor, min=0.0)
-        violation = torch.any(exceed > 0, dim=1)
-        self._joint_vel_violation = violation
-        return violation, exceed
-
     def _get_rewards(self) -> torch.Tensor:
-        # Lazily figure out which body is the throwing hand (Alpha: right_palm).
+        """Event-based throwing reward with mean L2 penalties and extra debug logs."""
         self._ensure_throw_hand_ids()
 
-        # Hand & ball positions (world frame)
-        hand_positions = self._robot.data.body_pos_w[:, [self._throw_hand_body_id], :].squeeze(1)
-        ball_positions = self.sphere_object.data.root_pos_w.clone()  # (num_envs, 3)
+        # Main/finger index tensors for penalties
+        if not hasattr(self, "_non_finger_joint_ids"):
+            self._build_alpha_joint_indices()
+            self._non_finger_joint_ids = self._main_joint_ids.to(self.device)
+        idx = self._non_finger_joint_ids
 
-        # Distance between ball and hand
-        dist = torch.norm(
-            self.sphere_object.data.body_pos_w[:, 0, 0:3] - hand_positions,
-            dim=1,
-        )
-        # Cache ball root state for release/landing logic
-        ball_pos_root = self.sphere_object.data.root_pos_w
-        release_envs = torch.as_tensor([], device=self.device, dtype=torch.long)
-        landing_envs = torch.as_tensor([], device=self.device, dtype=torch.long)
+        # --- Release / throwing reward -------------------------------------------------
+        ball_pos = self.sphere_object.data.body_pos_w[:, 0, 0:3]
+        hand_pos = self._robot.data.body_pos_w[:, self._throw_hand_body_id, :]
+        dist = torch.norm(ball_pos - hand_pos, dim=1)
 
-        if self.cfg.no_proj_motion:
-            # ----------------- (Rarely used path; kept structurally same as G1) ----------------- #
-            throwing_reward_condition = (dist > 0.25)
+        release_mask = (dist > 0.25) & (~self.throwing_reward_given)
+        self.not_released_ball &= ~release_mask
+        ball_released_envs = torch.nonzero(release_mask, as_tuple=False).flatten()
 
-            target_positions = self.target_positions[:] + self._terrain.env_origins[:]
-            targ_dist = torch.norm(
-                self.sphere_object.data.body_pos_w[:, 0, 0:3] - target_positions,
-                dim=1,
-            ).reshape(self.num_envs)
+        self.throwing_reward.zero_()
+        vel_align_rew = torch.zeros(self.num_envs, device=self.device)
 
-            on_ground = self.sphere_object.data.body_pos_w[:, 0, 2] < 0.05
+        if ball_released_envs.numel() > 0:
+            disp, landing_time = self.check_ball_displacement(ball_released_envs)
+            self.throwing_reward[ball_released_envs] = torch.clamp(1.0 - disp, min=0.0)
+            self.throwing_reward_given[ball_released_envs] = True
+            self.landing_time[ball_released_envs] = landing_time + self.episode_length_buf[ball_released_envs] * self.step_dt
+            self.release_ball_pos[ball_released_envs] = ball_pos[ball_released_envs]
+            target_pos = self.target_positions[ball_released_envs] + self._terrain.env_origins[ball_released_envs]
+            self.release_target_dir[ball_released_envs] = target_pos - ball_pos[ball_released_envs]
 
-            # Update best (smallest) distance while ball is flying
-            self.ball_distances[:] = torch.where(
-                ~on_ground & ((self.ball_distances[:] == -1) | (targ_dist < self.ball_distances[:])),
-                targ_dist,
-                self.ball_distances[:],
-            )
+        # Velocity / direction alignment each step for released balls
+        released_mask = ~self.not_released_ball
+        if released_mask.any():
+            released_ids = torch.nonzero(released_mask, as_tuple=False).flatten()
+            ball_vel = self.sphere_object.data.body_state_w[released_ids, 0, 7:10]
+            target_pos = self.target_positions[released_ids] + self._terrain.env_origins[released_ids]
+            target_dir = target_pos - ball_pos[released_ids]
+            dot = torch.sum(ball_vel * target_dir, dim=1)
+            denom = torch.clamp(torch.norm(ball_vel, dim=1) * torch.norm(target_dir, dim=1), min=1e-6)
+            cos_sim = torch.clamp(dot / denom, -1.0, 1.0)
+            vel_align_rew[released_ids] = torch.clamp(cos_sim, min=0.0)
 
-            env_ids = torch.nonzero((self.reset_buf == 1) & throwing_reward_condition).reshape(-1)
-            release_envs = env_ids
-            self.throwing_reward[:] = 0.0
+        # --- Stability / collisions ----------------------------------------------------
+        ball_positions = self.sphere_object.data.root_pos_w.clone()
+        ball_not_thrown_cond = (torch.norm((hand_pos - ball_positions), dim=1) <= 0.25) & (self.reset_buf == 1)
 
-            if len(env_ids) > 0:
-                self.throwing_reward[env_ids] = self.ball_distances[env_ids] / self.throwing_commands[env_ids, 0]
-                self.throwing_reward[env_ids] = 1 - torch.min(
-                    torch.tensor(1.0, device=self.device),
-                    self.throwing_reward[env_ids],
-                )
-            # If you really don't want this branch yet, you can keep an assert here:
-            # assert False
-        else:
-            # ----------------- Reward on first ground contact after release ----------------- #
-            self.throwing_reward[:] = 0.0
-
-            # Detect release events (first time ball leaves hand vicinity)
-            release_envs = torch.nonzero((dist > 0.25) & self.not_released_ball).reshape(-1)
-            if len(release_envs) > 0:
-                self.not_released_ball[release_envs] = False
-                self.released_ball_t[release_envs] = self.episode_length_buf[release_envs] * self.step_dt
-                self.release_ball_pos[release_envs] = ball_pos_root[release_envs]
-                target_positions_release = self.target_positions[release_envs] + self._terrain.env_origins[release_envs]
-                target_positions_release[:, :2] += self.default_root_states[release_envs, :2]
-                dir_vec = target_positions_release - self.release_ball_pos[release_envs]
-                norm = torch.norm(dir_vec, dim=1, keepdim=True).clamp(min=1e-6)
-                self.release_target_dir[release_envs] = dir_vec / norm
-
-            # Detect first ground hit after release for each env
-            ball_pos_root = self.sphere_object.data.root_pos_w
-            hit_ground_after_release = (
-                (ball_pos_root[:, 2] < 0.05) & (~self.not_released_ball) & (~self.throwing_reward_given)
-            )
-            landing_envs = torch.nonzero(hit_ground_after_release).reshape(-1)
-
-            if len(landing_envs) > 0:
-                # World-space target positions (match _get_dones)
-                target_positions = self.target_positions[landing_envs] + self._terrain.env_origins[landing_envs]
-                target_positions[:, :2] += self.default_root_states[landing_envs, :2]
-
-                ball_land_pos = ball_pos_root[landing_envs]
-                dist_to_target = torch.norm(ball_land_pos - target_positions, dim=1)
-
-                distance_command = torch.clamp(self.throwing_commands[landing_envs, 0], min=1e-3)
-                landing_reward = 1.0 - torch.clamp(dist_to_target / distance_command, max=1.0)
-
-                self.throwing_reward[landing_envs] = landing_reward
-                self.throwing_reward_given[landing_envs] = True
-                self.landing_time[landing_envs] = self.episode_length_buf[landing_envs] * self.step_dt
-
-        ball_released_envs = release_envs  # kept for compatibility
-
-        # -------------------------------------------------------------------------- #
-        # Direction reward: encourage release velocity pointing toward target
-        # -------------------------------------------------------------------------- #
-        direction_rew = torch.zeros(self.num_envs, device=self.device)
-        if len(release_envs) > 0:
-            ball_pos_release = self.sphere_object.data.root_pos_w[release_envs]
-            ball_state_release = self.sphere_object.data.body_state_w[release_envs, 0, :]
-            ball_vel_release = ball_state_release[:, [7, 8, 9]]
-
-            target_positions = self.target_positions[release_envs] + self._terrain.env_origins[release_envs]
-            target_positions[:, :2] += self.default_root_states[release_envs, :2]
-
-            target_dir = target_positions - ball_pos_release
-            target_dir_norm = torch.norm(target_dir, dim=1, keepdim=True).clamp(min=1e-6)
-            vel_norm = torch.norm(ball_vel_release, dim=1, keepdim=True).clamp(min=1e-6)
-            cos_sim = torch.sum(target_dir * ball_vel_release, dim=1, keepdim=True) / (target_dir_norm * vel_norm)
-            direction_rew[release_envs] = torch.clamp(cos_sim.squeeze(-1), min=0.0)
-
-        # Penalty if the ball lands significantly beyond the target distance (overthrow).
-        overthrow_penalty = torch.zeros(self.num_envs, device=self.device)
-        if len(landing_envs) > 0:
-            margin = getattr(self.cfg, "overthrow_margin", 0.0)
-            commanded_dist = self.throwing_commands[landing_envs, 0]
-            overthrow_mask = dist_to_target > (commanded_dist + margin)
-            if overthrow_mask.any():
-                overthrow_penalty[landing_envs[overthrow_mask]] = getattr(self.cfg, "overthrow_penalty", 0.0)
-
-        # Penalty if the ball under-travels well before the target along the intended direction.
-        underthrow_penalty = torch.zeros(self.num_envs, device=self.device)
-        if len(landing_envs) > 0:
-            commanded_dist = self.throwing_commands[landing_envs, 0]
-            travel_vec = ball_land_pos - self.release_ball_pos[landing_envs]
-            proj_travel = torch.sum(travel_vec * self.release_target_dir[landing_envs], dim=1)
-            margin = getattr(self.cfg, "underthrow_margin", 0.0)
-            underthrow_mask = proj_travel < (commanded_dist - margin)
-            if underthrow_mask.any():
-                underthrow_penalty[landing_envs[underthrow_mask]] = getattr(self.cfg, "underthrow_penalty", 0.0)
-
-        # Bonus for hitting target (either in-air or at landing within radius)
-        target_hit_reward = torch.zeros(self.num_envs, device=self.device)
-        target_radius = getattr(self.cfg, "target_hit_radius", 0.1)
-        target_positions_full = self.target_positions + self._terrain.env_origins
-        target_positions_full[:, :2] += self.default_root_states[:, :2]
-        # In-air proximity after release
-        in_air_close = (~self.not_released_ball) & (torch.norm(ball_pos_root - target_positions_full, dim=1) <= target_radius)
-        # Landing proximity
-        landing_close = torch.zeros_like(in_air_close)
-        if len(landing_envs) > 0:
-            landing_close[landing_envs] = torch.norm(ball_land_pos - target_positions, dim=1) <= target_radius
-        hit_mask = (in_air_close | landing_close) & (~self.target_hit_given)
-        if hit_mask.any():
-            target_hit_reward[hit_mask] = getattr(self.cfg, "target_hit_reward", 0.0)
-            self.target_hit_given[hit_mask] = True
-
-        # Post-release smoothing: penalize large joint acceleration shortly after release.
-        post_release_smooth = torch.zeros(self.num_envs, device=self.device)
-        current_time = self.episode_length_buf.float() * self.step_dt
-        window = getattr(self.cfg, "post_release_window_s", 0.0)
-        active_mask = (~self.not_released_ball) & (self.released_ball_t >= 0) & ((current_time - self.released_ball_t) <= window)
-        if active_mask.any():
-            accel_main = self._robot.data.joint_acc[:, self._non_finger_joint_ids]
-            accel_penalty = torch.sum(torch.square(accel_main), dim=1)
-            post_release_smooth = accel_penalty * getattr(self.cfg, "post_release_accel_penalty_scale", 0.0) * self.step_dt
-
-        # -------------------------------------------------------------------------- #
-        # Stability reward: penalize if ball never thrown or robot collides badly
-        # -------------------------------------------------------------------------- #
-
-        # Ball not thrown (still within 0.25m at reset)
-        ball_not_thrown_cond = (
-            (torch.norm((hand_positions - ball_positions), dim=1) <= 0.25)
-            & (self.reset_buf == 1)
-        )
-
-        # Collision detection with contact sensor
         first_contact = self._contact_sensor.compute_first_contact(self.step_dt)
-        # Mask out contacts while ball is still in hand
         mask = torch.where(
-            torch.norm((hand_positions - ball_positions), dim=1) <= 0.25,
+            torch.norm((hand_pos - ball_positions), dim=1) <= 0.25,
             torch.zeros(1, device=self.device),
             torch.ones(1, device=self.device),
         )
+        if hasattr(self, "hand_ids"):
+            first_contact[:, self.hand_ids] &= mask.view(-1, 1).expand(-1, len(self.hand_ids)).to(torch.bool)
+        non_feet = getattr(self, "non_feet_ids", None)
+        if non_feet is None:
+            non_feet = torch.arange(first_contact.shape[1], device=self.device)
+        collision = torch.sum(first_contact[:, non_feet], dim=1) > 0
 
-        # Remove "legit" hand–ball contact, but keep other collisions
-        first_contact[:, self.hand_ids] &= mask.view(-1, 1).expand(-1, len(self.hand_ids)).to(torch.bool)
-        collision = torch.sum(first_contact[:, self.non_feet_ids], dim=1) > 0
-
-        # Accumulate stability penalty over the episode
         self.stability_penalty_this_ep |= (ball_not_thrown_cond | collision)
+        if getattr(self.cfg, "nonsparse_stability_reward", False):
+            stability_rew = ((~(ball_not_thrown_cond | collision)).float() / self.max_episode_length_s) * self.step_dt
+        else:
+            stability_rew = ((self.reset_buf == 1) & (~self.stability_penalty_this_ep)).float()
 
-        stability_rew = ((self.reset_buf == 1) & (~self.stability_penalty_this_ep)).float()
-        joint_vel_violation, vel_exceed = self._check_joint_velocity_violation()
-        vel_penalty = torch.sum(vel_exceed, dim=1) * self.cfg.joint_velocity_penalty_scale
-        vel_limit_penalty = vel_penalty + joint_vel_violation.float() * self.cfg.joint_velocity_termination_penalty
+        # --- Smoothness penalties (mean over main joints) ------------------------------
+        action_rate = torch.mean(torch.square(self._actions[:, : idx.shape[0]] - self._previous_actions[:, : idx.shape[0]]), dim=1)
+        joint_torques = torch.mean(torch.square(self._robot.data.applied_torque[:, idx]), dim=1)
+        # Disable velocity/acceleration penalty for now
+        joint_accel = torch.zeros_like(action_rate)
 
-        # -------------------------------------------------------------------------- #
-        # Smoothness / effort penalties (use mean over main joints to avoid huge sums)
-        # -------------------------------------------------------------------------- #
-        main_ids = self._non_finger_joint_ids
-        main_count = max(1, main_ids.shape[0])
+        # --- Ball release bonus (event-based, single step) -----------------------------
+        ballrel_rew = torch.zeros(self.num_envs, device=self.device)
+        if ball_released_envs.numel() > 0:
+            ballrel_rew[ball_released_envs] = getattr(self.cfg, "ball_release_reward_scale", 0.0)
 
-        action_rate = torch.mean(torch.square(self._actions[:, : main_count] - self._previous_actions[:, : main_count]), dim=1)
-        joint_torques = torch.mean(torch.square(self._robot.data.applied_torque[:, main_ids]), dim=1)
-        joint_accel = torch.mean(torch.square(self._robot.data.joint_acc[:, main_ids]), dim=1)
-        # Electricity proxy only on torso + arm joints to match action layout (first 15 dims).
-        main_joint_vel = self._robot.data.joint_vel[:, main_ids]
-        electricity_cost = torch.mean(torch.abs(self._actions[:, : main_joint_vel.shape[1]] * main_joint_vel), dim=1)
-
-        # Reward for releasing the ball (sparse bonus when release is detected)
-        ball_release_rew = torch.zeros(self.num_envs, device=self.device)
-        if len(ball_released_envs) > 0:
-            ball_release_rew[ball_released_envs] = 1.0
-
-        # -------------------------------------------------------------------------- #
-        # Termination reward/penalty (success vs failure)
-        # -------------------------------------------------------------------------- #
-        ball_pos = self.sphere_object.data.root_pos_w  # (N, 3)
-        target_pos = self.target_positions + self._terrain.env_origins  # (N, 3)
-        hit_ground = (ball_pos[:, 2] < 0.05) & (~self.not_released_ball)
-        success_mask = hit_ground & (torch.norm(ball_pos - target_pos, dim=1) < 0.3)
-        too_far = (~self.not_released_ball) & (torch.norm(ball_pos[:, :2] - target_pos[:, :2], dim=1) > self.cfg.max_throw_dist + 1.0)
-        no_release_timeout = (self.episode_length_buf > 0.75 * self.max_episode_length) & (self.not_released_ball)
-        failure_mask = (hit_ground | too_far | no_release_timeout | joint_vel_violation) & (~success_mask)
-        termination_term = (
-            success_mask.float() * getattr(self.cfg, "termination_success_reward", 0.0)
-            + failure_mask.float() * getattr(self.cfg, "termination_failure_penalty", 0.0)
-        )
-
+        # --- Rewards dictionary (order matches reward_component_names) -----------------
         rewards = {
-            "throwing": torch.max(torch.zeros_like(self.throwing_reward), self.throwing_reward.clone())
-            * self.cfg.throwing_reward_scale,
-            "stability": stability_rew * self.cfg.stability_reward_scale * self.max_episode_length_s,
+            "throwing": torch.clamp(self.throwing_reward, min=0.0) * self.cfg.throwing_reward_scale,
+            "stability": stability_rew * self.cfg.stability_reward_scale,
             "action_rate_l2": action_rate * self.cfg.action_rate_reward_scale * self.step_dt,
             "dof_torques_l2": joint_torques * self.cfg.joint_torque_reward_scale * self.step_dt,
             "dof_acc_l2": joint_accel * self.cfg.joint_accel_reward_scale * self.step_dt,
-            "ballrel_rew": ball_release_rew * self.cfg.ball_release_reward_scale,
+            "ballrel_rew": ballrel_rew,
+            "vel_align_rew": vel_align_rew * getattr(self.cfg, "vel_align_reward_scale", 0.0),
         }
 
-        # Logging
+        # Logging / debugging
+        if not hasattr(self, "extras"):
+            self.extras = {}
+        self.extras["log"] = self.extras.get("log", {})
+        n_env = float(self.num_envs)
+        self.extras["log"]["debug/collision_pct"] = 100.0 * collision.float().mean()
+        self.extras["log"]["debug/ball_not_thrown_pct"] = 100.0 * ball_not_thrown_cond.float().mean()
+        self.extras["log"]["debug/stability_penalty_pct"] = 100.0 * self.stability_penalty_this_ep.float().mean()
+        self.extras["log"]["debug/ball_released_pct"] = 100.0 * (ball_released_envs.numel() / max(n_env, 1.0))
+
+        # Accumulate episodic sums
         for key, value in rewards.items():
             self._episode_sums[key] += value
 
-        # Track previous actions for next step's action_rate
+        # Keep previous actions after reward is computed (for next step penalty)
         self._previous_actions = self._actions.clone()
 
-        return torch.stack(list(rewards.values())).T
+        # Stack rewards in the predefined component order
+        reward_vec = torch.stack([rewards[name] for name in self.reward_component_names], dim=1)
+        return reward_vec
+
+    def _check_joint_velocity_violation(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Detect excessive joint velocities on main joints and accumulate violation flags."""
+        limit = getattr(self.cfg, "joint_velocity_limit", None)
+        penalty_scale = getattr(self.cfg, "joint_velocity_penalty_scale", 0.0)
+        if limit is None:
+            violation = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+            return violation, torch.zeros(self.num_envs, device=self.device)
+
+        joint_vel = self._robot.data.joint_vel[:, self._main_joint_ids]
+        violation = torch.any(torch.abs(joint_vel) > limit, dim=1)
+        self._joint_vel_violation |= violation
+        penalty = violation.float() * penalty_scale
+        return self._joint_vel_violation.clone(), penalty
 
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -1157,19 +825,26 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
         joint_pos = self._robot.data.default_joint_pos[env_ids].clone()
         joint_vel = self._robot.data.default_joint_vel[env_ids].clone()
 
-        # 1) Randomize torso + arm joints (main joints) within arm_dr_range
+        # 1) Rotate torso yaw (first main joint) to face the throw side:
+        #    right-hand throw -> -90 deg, left-hand throw -> +90 deg.
+        hand_side = getattr(self.cfg, "throw_hand_side", "right").lower()
+        if hand_side == "right":
+            joint_pos[:, self.main_joint_indices[0]] -= math.pi / 2.0
+        else:
+            joint_pos[:, self.main_joint_indices[0]] += math.pi / 2.0
+
+        # 2) Randomize torso + arm joints (main joints) within arm_dr_range
         #    This replaces the old G1 hand/arm jitter by specific indices.
         if getattr(self.cfg, "arm_dr_range", 0.0) > 0.0:
-            # joint_pos[:, main_joint_indices] += U(-arm_dr_range, arm_dr_range)
             rand_main = torch.zeros_like(joint_pos[:, self.main_joint_indices])
             rand_main.uniform_(-self.cfg.arm_dr_range, self.cfg.arm_dr_range)
             joint_pos[:, self.main_joint_indices] += rand_main
 
-        # 2) Fingers: start closed so the ball is held firmly at reset.
+        # 3) Fingers: start closed so the ball is held firmly at reset.
         if hasattr(self, "finger_joint_indices"):
             joint_pos[:, self.finger_joint_indices] = self._closed_finger_pose
 
-        # 3) Small global noise on all DOFs (same spirit as G1: +/- 0.05)
+        # 4) Small global noise on all DOFs (same spirit as G1: +/- 0.05)
         joint_pos += torch.zeros_like(joint_pos).uniform_(-0.05, 0.05)
         if hasattr(self, "finger_joint_indices"):
             joint_pos[:, self.finger_joint_indices] = self._closed_finger_pose

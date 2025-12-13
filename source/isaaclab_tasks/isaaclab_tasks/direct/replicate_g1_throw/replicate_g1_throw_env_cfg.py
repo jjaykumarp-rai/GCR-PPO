@@ -259,6 +259,8 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     no_release_timeout_frac = 0.5
     target_hit_radius = 0.1
     target_hit_reward = 0.75
+
+    vel_align_reward_scale = 0.1
     #throw_time_reward_scale = 1.0#1.0
     #zvel_reward_scale = 0.75
 
