@@ -92,11 +92,14 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
             key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
             for key in [
                 "throwing",
+                "throw_height",
                 # "roll",
                 "stability",
                 "action_rate_l2",
+                "dof_vel_l2",
                 "dof_torques_l2",
                 "dof_acc_l2",
+                "action_limit_penalty",
             ]
         }
 
@@ -404,6 +407,40 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
         if self.sim.render_mode.value != self.sim.render_mode.NO_GUI_OR_RENDERING:
             self.initialise_target_for_rendering(torch.arange(self.num_envs, device=self.device))
 
+        # Enforce URDF/asset limits on position targets (and step-wise velocity).
+        self._processed_actions_preclip = self._processed_actions.clone()
+        action_limit_violation = torch.zeros(self.num_envs, device=self.device)
+        pos_limits = getattr(self._robot.data, "joint_pos_limits", None)
+        if pos_limits is None:
+            pos_limits = getattr(self._robot.data, "joint_limits", None)
+        if pos_limits is not None:
+            lower = pos_limits[..., 0]
+            upper = pos_limits[..., 1]
+            if lower.dim() == 1:
+                lower = lower.unsqueeze(0)
+                upper = upper.unsqueeze(0)
+            if lower.shape[0] != self._processed_actions.shape[0]:
+                lower = lower.expand(self._processed_actions.shape[0], -1)
+                upper = upper.expand(self._processed_actions.shape[0], -1)
+            below = torch.clamp(lower - self._processed_actions_preclip, min=0.0)
+            above = torch.clamp(self._processed_actions_preclip - upper, min=0.0)
+            action_limit_violation += torch.sum(below + above, dim=1)
+            self._processed_actions = torch.clamp(self._processed_actions, lower, upper)
+
+        vel_limits = getattr(self._robot.data, "joint_vel_limits", None)
+        if vel_limits is not None:
+            max_step_delta = vel_limits * self.step_dt
+            if max_step_delta.dim() == 1:
+                max_step_delta = max_step_delta.unsqueeze(0)
+            if max_step_delta.shape[0] != self._processed_actions.shape[0]:
+                max_step_delta = max_step_delta.expand(self._processed_actions.shape[0], -1)
+            delta = self._processed_actions_preclip - self._robot.data.joint_pos
+            over_speed = torch.clamp(torch.abs(delta) - max_step_delta, min=0.0)
+            action_limit_violation += torch.sum(over_speed, dim=1)
+            delta = torch.clamp(delta, -max_step_delta, max_step_delta)
+            self._processed_actions = self._robot.data.joint_pos + delta
+
+        self._action_limit_violation = action_limit_violation
 
 
     def _apply_action(self) -> None:
@@ -441,6 +478,35 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
             - self._robot.data.default_joint_pos[:, idx]
         )
         joint_vel_info = self._robot.data.joint_vel[:, idx]
+        # Optional: include effort applied at each main joint for richer feedback.
+        joint_torque_info = (
+            self._robot.data.applied_torque[:, idx]
+            if self.cfg.obs_torque
+            else None
+        )
+        # Hand/ball kinematics for release reasoning
+        self._ensure_throw_hand_ids()
+        hand_pos = self._robot.data.body_pos_w[:, self._throw_hand_body_id]
+        hand_quat = self._robot.data.body_quat_w[:, self._throw_hand_body_id]
+        hand_vel_full = self._robot.data.body_vel_w[:, self._throw_hand_body_id]
+        hand_lin_vel = hand_vel_full[:, :3]
+        hand_ang_vel = hand_vel_full[:, 3:]
+
+        ball_state = self.sphere_object.data.body_state_w[:, 0]
+        ball_pos = ball_state[:, :3]
+        ball_vel = ball_state[:, 7:10]
+
+        ball_rel_pos = ball_pos - hand_pos
+        ball_rel_vel = ball_vel - hand_lin_vel
+
+        target_world = self.target_positions + self._terrain.env_origins
+        target_rel_hand = target_world - hand_pos
+
+        # Time remaining in episode (normalized)
+        time_remaining = (
+            (self.max_episode_length - self.episode_length_buf).float()
+            / float(self.max_episode_length)
+        ).unsqueeze(-1)
 
         ##########  Throw displacement estimation (same logic as G1) ##########
         estimated_displacement, estim_time = self.check_ball_displacement(
@@ -485,10 +551,32 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
                     joint_vel_info + (torch.rand_like(joint_vel_info) * 0.1 - 0.05),
                     # Previous action (full, including fingers)
                     self._actions,
+                    # Raw processed targets before clipping
+                    self._processed_actions_preclip
+                    if self.cfg.obs_processed_actions and hasattr(self, "_processed_actions_preclip")
+                    else None,
                     # Ball released flag (1 = not released, 0 = released)
                     self.not_released_ball.unsqueeze(-1).float()
                     if self.cfg.obs_notrelease
                     else None,
+                    # Ball relative to hand (pos/vel)
+                    torch.cat([ball_rel_pos, ball_rel_vel], dim=-1)
+                    if self.cfg.obs_ball_state
+                    else None,
+                    # Hand pose/velocity (quat + lin vel + ang vel)
+                    torch.cat([hand_quat, hand_lin_vel, hand_ang_vel], dim=-1)
+                    if self.cfg.obs_hand_pose
+                    else None,
+                    # Target relative to hand
+                    target_rel_hand
+                    if self.cfg.obs_target_rel
+                    else None,
+                    # Normalized time remaining
+                    time_remaining
+                    if self.cfg.obs_time
+                    else None,
+                    # Optional torques for main joints
+                    joint_torque_info,
                     # Privileged estimated displacement + time + ball vel (optionally)
                     noise_displace.unsqueeze(-1)
                     if self.cfg.obs_estimdisplace
@@ -722,6 +810,8 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
             self.sphere_object.data.body_pos_w[:, 0, 0:3] - hand_positions,
             dim=1,
         )
+        # Bonus encouraging upward loft after release
+        throw_height_bonus = torch.zeros(self.num_envs, device=self.device)
 
         if self.cfg.no_proj_motion:
             # ----------------- (Rarely used path; kept structurally same as G1) ----------------- #
@@ -746,6 +836,15 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
             self.throwing_reward[:] = 0.0
 
             if len(env_ids) > 0:
+                # Peak height above release point (only upward velocity counts)
+                ball_state = self.sphere_object.data.body_state_w[env_ids, 0, :10]
+                z0 = ball_state[:, 2]
+                vz0 = ball_state[:, 9]
+                peak_height = z0 + torch.clamp(vz0, min=0.0) ** 2 / (2 * 9.81)
+                height_gain = torch.clamp(peak_height - z0, min=0.0)
+                height_target = max(self.cfg.throw_height_target, 1e-3)
+                throw_height_bonus[env_ids] = torch.clamp(height_gain / height_target, max=1.0)
+
                 self.throwing_reward[env_ids] = self.ball_distances[env_ids] / self.throwing_commands[env_ids, 0]
                 self.throwing_reward[env_ids] = 1 - torch.min(
                     torch.tensor(1.0, device=self.device),
@@ -763,6 +862,15 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
             self.throwing_reward[:] = 0.0
 
             if len(env_ids) > 0:
+                # Peak height above release point (only upward velocity counts)
+                ball_state = self.sphere_object.data.body_state_w[env_ids, 0, :10]
+                z0 = ball_state[:, 2]
+                vz0 = ball_state[:, 9]
+                peak_height = z0 + torch.clamp(vz0, min=0.0) ** 2 / (2 * 9.81)
+                height_gain = torch.clamp(peak_height - z0, min=0.0)
+                height_target = max(self.cfg.throw_height_target, 1e-3)
+                throw_height_bonus[env_ids] = torch.clamp(height_gain / height_target, max=1.0)
+
                 # check_ball_displacement returns (error, landing_time)
                 self.throwing_reward[env_ids], self.landing_time[env_ids] = self.check_ball_displacement(env_ids)
                 self.throwing_reward[env_ids] = 1 - self.throwing_reward[env_ids]
@@ -808,17 +916,26 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
         # Smoothness / effort penalties (same as G1)
         # -------------------------------------------------------------------------- #
         action_rate = torch.sum(torch.square(self._actions - self._previous_actions), dim=1)
+        joint_vel = torch.sum(torch.square(self._robot.data.joint_vel), dim=1)
         joint_torques = torch.sum(torch.square(self._robot.data.applied_torque), dim=1)
         joint_accel = torch.sum(torch.square(self._robot.data.joint_acc), dim=1)
+        if getattr(self.cfg, "joint_vel_penalty_clip", None):
+            joint_vel = torch.clamp(joint_vel, max=self.cfg.joint_vel_penalty_clip)
+        # Clamp acceleration penalty to avoid overwhelming negatives
+        if getattr(self.cfg, "joint_accel_penalty_clip", None):
+            joint_accel = torch.clamp(joint_accel, max=self.cfg.joint_accel_penalty_clip)
 
         rewards = {
             "throwing": torch.max(torch.zeros_like(self.throwing_reward), self.throwing_reward.clone())
             * self.cfg.throwing_reward_scale
             * self.max_episode_length_s,
+            "throw_height": throw_height_bonus * self.cfg.throw_height_reward_scale * self.max_episode_length_s,
             "stability": stability_rew * self.cfg.stability_reward_scale * self.max_episode_length_s,
             "action_rate_l2": action_rate * self.cfg.action_rate_reward_scale * self.step_dt,
+            "dof_vel_l2": joint_vel * self.cfg.joint_vel_reward_scale * self.step_dt,
             "dof_torques_l2": joint_torques * self.cfg.joint_torque_reward_scale * self.step_dt,
             "dof_acc_l2": joint_accel * self.cfg.joint_accel_reward_scale * self.step_dt,
+            "action_limit_penalty": self._action_limit_violation * self.cfg.action_limit_penalty_scale * self.step_dt,
         }
 
         #reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
@@ -927,6 +1044,9 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
         grip_action_index = self._main_joint_ids.shape[0]
         self._actions[env_ids, grip_action_index] = -1.0
         self._previous_actions[env_ids, grip_action_index] = -1.0
+        # Initialize processed-action buffer so obs dimensionality is consistent from step 0.
+        self._processed_actions_preclip = self._robot.data.default_joint_pos.clone()
+        self._action_limit_violation = torch.zeros(self.num_envs, device=self.device)
 
         # ----------------- Sample new target / commands --------------------- #
         self._sample_throwing_commands(env_ids)

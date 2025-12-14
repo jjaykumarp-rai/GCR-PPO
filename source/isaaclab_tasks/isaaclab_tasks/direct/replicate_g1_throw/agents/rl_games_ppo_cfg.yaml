@@ -27,8 +27,8 @@ params:
           name: default
         sigma_init:
           name: const_initializer
-          val: 0
-        fixed_sigma: True
+          val: 0.5  # initial exploration noise
+        fixed_sigma: False  # allow the policy to learn/decay its own std
     mlp:
       units: [32, 32]
       activation: elu
@@ -66,7 +66,7 @@ params:
     save_best_after: 50
     save_frequency: 25
     grad_norm: 1.0
-    entropy_coef: 0.0
+    entropy_coef: 0.02  # encourage early exploration; reduce later if needed
     truncate_grads: True
     e_clip: 0.2
     horizon_length: 32

@@ -132,7 +132,7 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     action_scale = 0.5
     # Actions: [ torso (1), right arm (7), left arm (7), grip (1) ] = 16
     action_space = 16
-    observation_space = 100
+    observation_space = 105
     state_space = 0
     air_resistance = False
 
@@ -236,27 +236,38 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     # robot
     robot: ArticulationCfg = ALPHA_CFG.replace(prim_path="/World/envs/env_.*/Robot")
 
-    throwing_reward_scale = 2.05#1.0
-    throw_height_reward_scale = 2.0
+    throwing_reward_scale = 3.0  # prioritize target accuracy
+    throw_height_reward_scale = 1.0  # secondary to distance/accuracy
+    throw_height_target = 0.6
     action_rate_reward_scale = -1e-3
     joint_torque_reward_scale = -2.5e-6
+    joint_vel_reward_scale = -1e-4
     joint_accel_reward_scale = -2.5e-8
+    joint_vel_penalty_clip = 1.0e4
+    joint_accel_penalty_clip = 1.0e4
+    action_limit_penalty_scale = -1e-3
     #throw_time_reward_scale = 1.0#1.0
     #zvel_reward_scale = 0.75
 
     arm_dr_range = 0.3
     obs_lin_vel = True
-    obs_ang_vel = True
+    obs_ang_vel = False
     obs_proj_grav = True
     
     obs_baseheight = False
     obs_footangle = False
     obs_notrelease = True
     obs_estimdisplace = True
+    obs_torque = False
+    obs_ball_state = True
+    obs_hand_pose = True
+    obs_time = True
+    obs_target_rel = True
+    obs_processed_actions = True
     r_throw_thresh = 0.5
 
     # target placement controls
-    min_throw_dist = 2.0  # start curriculum close, then expand outward
+    min_throw_dist = 3.0  # start curriculum close, then expand outward
     target_fov_deg = 30.0
     target_height_range = (0.1, 1.0)
     # Rotate target heading relative to the world forward (+X). Alpha faces +Y, so add 90 deg.
@@ -265,9 +276,9 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
 
     # just for experiments...
     use_stability = True # dont need
-    no_proj_motion = True
+    no_proj_motion = False
     nonsparse_stability_reward = False # so that stability reward contains only collision and ball not thrown condition
-    max_throw_dist = 7
+    max_throw_dist = 5
 
     # ---------------------------------------------------------------------
     # things I changed for migration from throwing to replicate_g1_throw
