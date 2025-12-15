@@ -102,6 +102,7 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
                 "projectile_rew",
                 "stability",
                 "action_rate_l2",
+                "dof_vel_l2",
                 "dof_torques_l2",
                 "dof_acc_l2",
                 "ballrel_rew",

@@ -1,4 +1,4 @@
-from isaaclab.actuators.actuator_cfg import DelayedPDActuatorCfg
+from isaaclab.actuators.actuator_cfg import PDActuatorCfg
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg
 
@@ -44,8 +44,8 @@ FINGER_JOINTS = [
 ]
 
 
-def _make_alpha_impedance_actuator() -> DelayedPDActuatorCfg:
-    """Impedance (Delayed PD) actuator for torso + right arm + left arm.
+def _make_alpha_impedance_actuator() -> PDActuatorCfg:
+    """Standard PD actuator for torso + right arm + left arm.
     Fingers are controlled separately in the env (not here).
     """
     joint_names = TORSO_JOINTS + RIGHT_ARM_JOINTS + LEFT_ARM_JOINTS
@@ -94,14 +94,12 @@ def _make_alpha_impedance_actuator() -> DelayedPDActuatorCfg:
         for name in joint_names
     }
 
-    return DelayedPDActuatorCfg(
+    return PDActuatorCfg(
         joint_names_expr=joint_names,
         stiffness=stiffness,
         damping=damping,
         armature=0.01,
         effort_limit=torque_limits,
-        min_delay=1,
-        max_delay=1,
     )
 
 

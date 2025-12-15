@@ -132,7 +132,7 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     action_scale = 0.5
     # Actions: [ torso (1), right arm (7), left arm (7), grip (1) ] = 16
     action_space = 16
-    observation_space = 100
+    observation_space = 105
     state_space = 0
     air_resistance = False
 
@@ -236,36 +236,16 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     # robot
     robot: ArticulationCfg = ALPHA_CFG.replace(prim_path="/World/envs/env_.*/Robot")
 
-    throwing_reward_scale = 2.05  # align with throwing task
-    projectile_reward_scale = 1.0  # enable projectile reward term
-    throw_height_reward_scale = 0.0
+    throwing_reward_scale = 3.0  # prioritize target accuracy
+    throw_height_reward_scale = 1.0  # secondary to distance/accuracy
     throw_height_target = 0.6
-    action_rate_reward_scale = -5e-4  # softer penalty on action deltas
-    joint_torque_reward_scale = -1e-6  # reduce torque penalty by ~25x
-    joint_accel_reward_scale = -1e-8  # reduce accel penalty by ~100x to avoid overwhelming reward
-    energy_reward_scale = -1e-4  # mild energy penalty
-    ball_release_reward_scale = 0.1  # bonus when the ball is released
-    zvel_reward_scale = 1.0  # reward upward velocity at release
-    zvel_target = 3.0  # m/s target upward speed
-    # Early-termination guardrail for excessive joint speeds
-    joint_velocity_limit = 80.0
-    joint_velocity_termination_penalty = -1.0
-    joint_velocity_penalty_scale = -1e-3
-    termination_success_reward = 1.0
-    termination_failure_penalty = -1.0
-    direction_reward_scale = 0.5
-    overthrow_margin = 0.5
-    overthrow_penalty = -0.5
-    post_release_window_s = 0.25
-    release_distance_threshold = 0.25  # detect release once ball is 25cm from hand (projectile reward trigger)
-    post_release_accel_penalty_scale = -1e-9
-    underthrow_margin = 0.5
-    underthrow_penalty = -0.5
-    no_release_timeout_frac = 0.5
-    target_hit_radius = 0.1
-    target_hit_reward = 0.75
-
-    vel_align_reward_scale = 0.1
+    action_rate_reward_scale = -1e-3
+    joint_torque_reward_scale = -2.5e-6
+    joint_vel_reward_scale = -1e-4
+    joint_accel_reward_scale = -2.5e-8
+    joint_vel_penalty_clip = 1.0e4
+    joint_accel_penalty_clip = 1.0e4
+    action_limit_penalty_scale = -1e-3
     #throw_time_reward_scale = 1.0#1.0
     #zvel_reward_scale = 0.75
 
@@ -276,28 +256,25 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     joint_vel_noise_range = (-0.07, 0.07)
 
     obs_lin_vel = True
-    obs_ang_vel = True
+    obs_ang_vel = False
     obs_proj_grav = True
     
     obs_baseheight = False
     obs_footangle = False
     obs_notrelease = True
     obs_estimdisplace = True
+    obs_torque = False
+    obs_ball_state = True
+    obs_hand_pose = True
+    obs_time = True
+    obs_target_rel = True
+    obs_processed_actions = True
     r_throw_thresh = 0.5
 
     # target placement controls
-    # Set these for fixed-target overfitting tests; set to None to re-enable sampling/curriculum.
-    fixed_throw_dist: float | None = None  # fixed distance for debug/overfit tests
-    fixed_target_height: float | None = None  # e.g., 0.5 for fixed height
-    min_throw_dist = 2.5  # start curriculum close
-    max_throw_dist = 4.5
-    target_fov_deg = 10.0
-    target_height_range = (0.3, 1.1)
-    # Curriculum controls for distance/height expansion
-    initial_max_throw_dist = 3.25
-    curriculum_distance_increment = 0.05
-    initial_target_height_range = (0.1, 0.3)
-    curriculum_height_increment = 0.02
+    min_throw_dist = 3.0  # start curriculum close, then expand outward
+    target_fov_deg = 30.0
+    target_height_range = (0.1, 1.0)
     # Rotate target heading relative to the world forward (+X). Alpha faces +Y, so add 90 deg.
     target_heading_offset_deg = 90.0
     robot_yaw_offset_deg = 0.0
@@ -306,7 +283,7 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     use_stability = True # dont need
     no_proj_motion = False
     nonsparse_stability_reward = False # so that stability reward contains only collision and ball not thrown condition
-    max_throw_dist = 5.5
+    max_throw_dist = 5
 
     # ---------------------------------------------------------------------
     # things I changed for migration from throwing to replicate_g1_throw
