@@ -4,6 +4,15 @@ Refer to the CONDOR-EPIC: [CDR-1586](https://theaiinstitute.atlassian.net/browse
 
 This is a forked setup from [GCR-PPO](https://github.com/humphreymunn/GCR-PPO), a focused fork/adaptation of [IsaacLab](https://github.com/isaac-sim/IsaacLab) targeting **IsaacLab 2.1.0** with **RSL-RL**.
 
+Relevant background 🎯:
+- 🔧 Optimization-only throwing on fixed-base, single-arm manipulators.
+- 🤖 Recent RL work on throwing with single-arm manipulators on legged bases (Anymal/Spot).
+- 📐 Some slanted-throw approaches rely on real-robot data for sim2real and imitation.
+- 🧩 Open-source code for multi-objective throwing remains scarce.
+
+GCR-PPO, a PPO variant, includes a throwing task on a G1 humanoid from prior work. We reuse it here to recreate throwing behavior with observations, actions, and rewards adapted to the RAI Alpha robot. Any PPO algorithm could be swapped in.
+
+
 ## Contents
 - [Alpha RL Throw](#alpha-rl-throw-)
 - [Quick Start](#quick-start-)
@@ -16,14 +25,6 @@ This is a forked setup from [GCR-PPO](https://github.com/humphreymunn/GCR-PPO), 
   - [Play a Trained Policy](#play-a-trained-policy-)
   - [Media](#media-)
   - [Adding New Tasks](#adding-new-tasks-)
-
-Relevant background 🎯:
-- 🔧 Optimization-only throwing on fixed-base, single-arm manipulators.
-- 🤖 Recent RL work on throwing with single-arm manipulators on legged bases (Anymal/Spot).
-- 📐 Some slanted-throw approaches rely on real-robot data for sim2real and imitation.
-- 🧩 Open-source code for multi-objective throwing remains scarce.
-
-GCR-PPO, a PPO variant, includes a throwing task on a G1 humanoid from prior work. We reuse it here to recreate throwing behavior with observations, actions, and rewards adapted to the RAI Alpha robot. Any PPO algorithm could be swapped in.
 
 ## Quick Start ⚡
 
