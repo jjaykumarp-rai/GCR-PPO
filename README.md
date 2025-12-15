@@ -42,6 +42,8 @@ git checkout jishnu/adapt-to-alpha
 # create a conda env (isaacsim 4.5)
 conda create -n alpha_throw4.5 python=3.10
 
+conda activate alpha_throw4.5
+
 # install isaaclab from current directory
 ./isaaclab.sh --install
 
