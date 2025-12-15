@@ -1,5 +1,7 @@
 # Alpha RL Throw 🚀
 
+Refer to the CONDOR-EPIC: [CDR-1586](https://theaiinstitute.atlassian.net/browse/CDR-1586)
+
 This is a forked setup from [GCR-PPO](https://github.com/humphreymunn/GCR-PPO), a focused fork/adaptation of [IsaacLab](https://github.com/isaac-sim/IsaacLab) targeting **IsaacLab 2.1.0** with **RSL-RL**.
 
 Relevant background 🎯:
@@ -46,7 +48,7 @@ conda create -n alpha_throw4.5 python=3.10
 
 Refer to the original [README](README.og.md) for details about GCR-PPO.
 
-## HOW TO RUN
+## HOW TO RUN ▶️
 
 ### Baselines and Variants 🏁
 #### GCR-PPO (multi-head critic + priority-aware PCGrad):
@@ -78,7 +80,7 @@ Supported example tasks:
   --use_critic_multi --use_pcgrad \
 ```
 
-See scripts/reinforcement_learning/rsl_rl/train.py for available flags
+See `scripts/reinforcement_learning/rsl_rl/train.py` for available flags ⚙️
 (e.g., --energy, --gait, --armsp, etc.) and their ranges.
 
 ### Output and Logs 📊
@@ -92,6 +94,11 @@ tensorboard --logdir logs/
 ```sh
 ./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/play.py --task=Isaac-Replicate-G1-Throw-Direct-v0 --num_envs 4 --checkpoint=<path/to/checkpoint.pt>
 ```
+
+### Media 🎥
+- Front-directed throw sample: `media/g1-front-dir-12K.mp4`
+- Random-direction throw sample: `media/g1-rand-dir-12K.mp4`
+- Random-direction with velocity tracking: `media/g1-rand-dir-12K-vel-track.mp4`
 
 ### Adding New Tasks 🆕
 For adding new (a) Direct (single-class) tasks and (b) Manager (cfg-driven) tasks, see the original [README](README.og.md).
