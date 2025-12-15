@@ -99,9 +99,8 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
             key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
             for key in [
                 "throwing",
+                "projectile_rew",
                 "stability",
-                "zvel_rew",
-                "landing_rew",
                 "action_rate_l2",
                 "dof_torques_l2",
                 "dof_acc_l2",
@@ -110,7 +109,7 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
         }
         self.reward_component_names = list(self._episode_sums.keys())
         self.reward_components = len(self.reward_component_names)
-        self.reward_component_task_rew = ["throwing", "landing_rew", "ballrel_rew", "zvel_rew"]
+        self.reward_component_task_rew = ["throwing", "projectile_rew", "ballrel_rew"]
 
         # config-dependent ranges
         if self.cfg.arm_only:
@@ -182,7 +181,12 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
     # Joint index mapping
     # ---------------------------------------------------------------------
     def _build_alpha_joint_indices(self):
-        if hasattr(self, "_main_joint_ids") and hasattr(self, "_finger_joint_ids"):
+        if (
+            hasattr(self, "_main_joint_ids")
+            and hasattr(self, "_finger_joint_ids")
+            and hasattr(self, "_right_arm_ids")
+            and hasattr(self, "_other_main_joint_ids")
+        ):
             return
 
         robot_joint_names = list(self._robot.data.joint_names)
@@ -193,13 +197,18 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
 
         main_indices = [name_to_idx[j] for j in CANONICAL_MAIN_JOINTS]
         finger_indices = [name_to_idx[j] for j in CANONICAL_FINGER_JOINTS]
+        right_arm_indices = [name_to_idx[j] for j in RIGHT_ARM_JOINTS]
+        other_main_indices = [idx for idx in main_indices if idx not in right_arm_indices]
 
         self._main_joint_ids = torch.tensor(main_indices, device=self.device, dtype=torch.long)
         self._finger_joint_ids = torch.tensor(finger_indices, device=self.device, dtype=torch.long)
+        self._right_arm_ids = torch.tensor(right_arm_indices, device=self.device, dtype=torch.long)
+        self._other_main_joint_ids = torch.tensor(other_main_indices, device=self.device, dtype=torch.long)
         self._non_finger_joint_ids = self._main_joint_ids
 
         assert len(self._main_joint_ids) == 15
         assert len(self._finger_joint_ids) == 12
+        assert len(self._right_arm_ids) == len(RIGHT_ARM_JOINTS)
 
     # ---------------------------------------------------------------------
     # Target WORLD position helper (single source of truth)
@@ -269,6 +278,18 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
         idx = self._non_finger_joint_ids
         joint_pos_info = self._robot.data.joint_pos[:, idx] - self._robot.data.default_joint_pos[:, idx]
         joint_vel_info = self._robot.data.joint_vel[:, idx]
+        pos_noise_range = getattr(self.cfg, "joint_pos_noise_range", None)
+        vel_noise_range = getattr(self.cfg, "joint_vel_noise_range", None)
+        joint_pos_noise = (
+            torch.zeros_like(joint_pos_info).uniform_(pos_noise_range[0], pos_noise_range[1])
+            if pos_noise_range is not None
+            else 0.0
+        )
+        joint_vel_noise = (
+            torch.zeros_like(joint_vel_info).uniform_(vel_noise_range[0], vel_noise_range[1])
+            if vel_noise_range is not None
+            else 0.0
+        )
 
         estimated_displacement, estim_time = self.check_ball_displacement(torch.arange(self.num_envs, device=self.device))
         estimated_displacement = 1 - estimated_displacement
@@ -289,8 +310,8 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
                     self._robot.data.projected_gravity_b if self.cfg.obs_proj_grav else None,
                     (roll.float() + (torch.rand_like(roll) * 0.02 - 0.01)).unsqueeze(-1) if self.cfg.obs_roll else None,
                     self.throwing_commands,
-                    joint_pos_info + (torch.rand_like(joint_pos_info) * 0.02 - 0.01),
-                    joint_vel_info + (torch.rand_like(joint_vel_info) * 0.1 - 0.05),
+                    joint_pos_info + joint_pos_noise,
+                    joint_vel_info + joint_vel_noise,
                     self._actions,
                     self.not_released_ball.unsqueeze(-1).float() if self.cfg.obs_notrelease else None,
                     noise_displace.unsqueeze(-1) if self.cfg.obs_estimdisplace else None,
@@ -340,18 +361,22 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
         ball_pos = self.sphere_object.data.body_pos_w[:, 0, 0:3]
         hand_pos = self._robot.data.body_pos_w[:, self._throw_hand_body_id, :]
         dist_hand_ball = torch.norm(ball_pos - hand_pos, dim=1)
+        release_threshold = float(getattr(self.cfg, "release_distance_threshold", 0.25))
 
         # release event
-        release_mask = (dist_hand_ball > 0.30) & (~self.throwing_reward_given)
+        release_mask = (dist_hand_ball > release_threshold) & (~self.throwing_reward_given)
         self.not_released_ball &= ~release_mask
         ball_released_envs = torch.nonzero(release_mask, as_tuple=False).flatten()
 
         self.throwing_reward.zero_()
-        zvel_rew = torch.zeros(self.num_envs, device=self.device)
+        projectile_rew = torch.zeros(self.num_envs, device=self.device)
 
         if ball_released_envs.numel() > 0:
             disp, landing_time = self.check_ball_displacement(ball_released_envs)
-            self.throwing_reward[ball_released_envs] = torch.clamp(1.0 - disp, min=0.0)
+            # projectile reward: r_throw = 1 - min(E/r, 1) where E is displacement to target
+            proj_rew_vals = torch.clamp(1.0 - disp, min=0.0)
+            self.throwing_reward[ball_released_envs] = proj_rew_vals
+            projectile_rew[ball_released_envs] = proj_rew_vals
             self.throwing_reward_given[ball_released_envs] = True
             self.landing_time[ball_released_envs] = landing_time + self.episode_length_buf[ball_released_envs] * self.step_dt
             self.release_ball_pos[ball_released_envs] = ball_pos[ball_released_envs]
@@ -359,18 +384,13 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
             target_pos = self._target_world(ball_released_envs)
             self.release_target_dir[ball_released_envs] = target_pos - ball_pos[ball_released_envs]
 
-            ball_state = self.sphere_object.data.body_state_w[ball_released_envs, 0, :10]
-            vz0 = torch.clamp(ball_state[:, 9], min=0.0)
-            target_vz = max(getattr(self.cfg, "zvel_target", 3.0), 1e-3)
-            zvel_rew[ball_released_envs] = torch.clamp(vz0 / target_vz, max=1.0)
-
         # stability / collision penalty (kept)
         ball_positions = self.sphere_object.data.root_pos_w.clone()
-        ball_not_thrown_cond = (torch.norm((hand_pos - ball_positions), dim=1) <= 0.30) & (self.reset_buf == 1)
+        ball_not_thrown_cond = (torch.norm((hand_pos - ball_positions), dim=1) <= release_threshold) & (self.reset_buf == 1)
 
         first_contact = self._contact_sensor.compute_first_contact(self.step_dt)
         mask = torch.where(
-            torch.norm((hand_pos - ball_positions), dim=1) <= 0.25,
+            torch.norm((hand_pos - ball_positions), dim=1) <= release_threshold,
             torch.zeros(1, device=self.device),
             torch.ones(1, device=self.device),
         )
@@ -390,33 +410,23 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
         # smoothness penalties
         action_rate = torch.mean(torch.square(self._actions[:, : idx.shape[0]] - self._previous_actions[:, : idx.shape[0]]), dim=1)
         joint_torques = torch.mean(torch.square(self._robot.data.applied_torque[:, idx]), dim=1)
-        joint_accel = torch.zeros_like(action_rate)
+        # use sim-reported joint accelerations if available, otherwise fallback to zeros
+        joint_acc_data = getattr(self._robot.data, "joint_acc", None)
+        if joint_acc_data is not None:
+            joint_accel = torch.mean(torch.square(joint_acc_data[:, idx]), dim=1)
+        else:
+            joint_accel = torch.zeros_like(action_rate)
 
         # ball release bonus (single step)
         ballrel_rew = torch.zeros(self.num_envs, device=self.device)
         if ball_released_envs.numel() > 0:
             ballrel_rew[ball_released_envs] = getattr(self.cfg, "ball_release_reward_scale", 0.0)
 
-        # -----------------------------------------------------------------
-        # NEW: landing-anchored reward (REAL landing error to target)
-        # -----------------------------------------------------------------
-        target_world = self._target_world()  # (N,3)
-        released = ~self.not_released_ball
-        landed = released & (ball_positions[:, 2] < 0.05)  # ball on ground after release
-        landing_rew = torch.zeros(self.num_envs, device=self.device)
-
-        if landed.any():
-            err_xy = torch.norm(ball_positions[landed, :2] - target_world[landed, :2], dim=1)
-            sigma = float(getattr(self.cfg, "landing_reward_sigma", 0.5))  # meters
-            sigma = max(sigma, 1e-3)
-            landing_rew[landed] = torch.exp(-err_xy / sigma)
-
         # overall rewards
         rewards = {
             "throwing": torch.clamp(self.throwing_reward, min=0.0) * self.cfg.throwing_reward_scale,
+            "projectile_rew": projectile_rew * float(getattr(self.cfg, "projectile_reward_scale", 0.0)),
             "stability": stability_rew * self.cfg.stability_reward_scale,
-            "zvel_rew": zvel_rew * getattr(self.cfg, "zvel_reward_scale", 0.0),
-            "landing_rew": landing_rew * float(getattr(self.cfg, "landing_reward_scale", 1.0)),
             "action_rate_l2": action_rate * self.cfg.action_rate_reward_scale * self.step_dt,
             "dof_torques_l2": joint_torques * self.cfg.joint_torque_reward_scale * self.step_dt,
             "dof_acc_l2": joint_accel * self.cfg.joint_accel_reward_scale * self.step_dt,
@@ -431,8 +441,11 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
         self.extras["log"]["debug/collision_pct"] = 100.0 * collision.float().mean()
         self.extras["log"]["debug/ball_not_thrown_pct"] = 100.0 * ball_not_thrown_cond.float().mean()
         self.extras["log"]["debug/stability_penalty_pct"] = 100.0 * self.stability_penalty_this_ep.float().mean()
+        # per-step: only counts envs releasing this step (expected small)
         self.extras["log"]["debug/ball_released_pct"] = 100.0 * (ball_released_envs.numel() / max(n_env, 1.0))
-        self.extras["log"]["debug/landed_pct"] = 100.0 * landed.float().mean()
+        # cumulative: fraction of envs that have released at least once this episode
+        released_any = (~self.not_released_ball).float().mean() * 100.0
+        self.extras["log"]["debug/ball_released_cum_pct"] = released_any
 
         # curriculum update hook
         try:
@@ -537,11 +550,33 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
         # fingers start closed to hold ball
         joint_pos[:, self._finger_joint_ids] = self._closed_finger_pose
 
-        # small noise
-        if float(getattr(self.cfg, "arm_dr_range", 0.0)) > 0.0:
-            rand_main = torch.zeros_like(joint_pos[:, self._main_joint_ids])
-            rand_main.uniform_(-self.cfg.arm_dr_range, self.cfg.arm_dr_range)
-            joint_pos[:, self._main_joint_ids] += rand_main
+        # randomized initialization
+        right_arm_range = float(getattr(self.cfg, "right_arm_init_range", 0.0))
+        if right_arm_range > 0.0 and self._right_arm_ids.numel() > 0:
+            right_arm_noise = torch.zeros_like(joint_pos[:, self._right_arm_ids])
+            right_arm_noise.uniform_(-right_arm_range, right_arm_range)
+            joint_pos[:, self._right_arm_ids] += right_arm_noise
+
+        other_joint_range = float(getattr(self.cfg, "other_joint_init_range", 0.0))
+        other_joint_ids = torch.cat((self._other_main_joint_ids, self._finger_joint_ids))
+        if other_joint_range > 0.0 and other_joint_ids.numel() > 0:
+            other_noise = torch.zeros_like(joint_pos[:, other_joint_ids])
+            other_noise.uniform_(-other_joint_range, other_joint_range)
+            joint_pos[:, other_joint_ids] += other_noise
+
+        pos_noise_range = getattr(self.cfg, "joint_pos_noise_range", None)
+        if pos_noise_range is not None:
+            joint_pos += torch.zeros_like(joint_pos).uniform_(pos_noise_range[0], pos_noise_range[1])
+
+        vel_noise_range = getattr(self.cfg, "joint_vel_noise_range", None)
+        if vel_noise_range is not None:
+            joint_vel += torch.zeros_like(joint_vel).uniform_(vel_noise_range[0], vel_noise_range[1])
+
+        limits = getattr(self._robot.data, "joint_pos_limits", None)
+        if limits is not None:
+            lower = limits[env_ids, :, 0]
+            upper = limits[env_ids, :, 1]
+            joint_pos = torch.max(torch.min(joint_pos, upper), lower)
 
         default_root_state = self._robot.data.default_root_state[env_ids].clone()
         default_root_state[:, 7:] = 0.0
@@ -612,7 +647,7 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
 
         self.action_noise = min(1.0, self.action_noise + 0.001)
 
-        if (throwing_value > self.cfg.r_throw_thresh and stability_value > self.cfg.r_stability_thresh) or (iter >= 5000):
+        if (throwing_value > self.cfg.r_throw_thresh and stability_value > self.cfg.r_stability_thresh) or (iter >= 750):
             dist_step = getattr(self.cfg, "curriculum_distance_increment", 0.01)
             height_step = getattr(self.cfg, "curriculum_height_increment", 0.01)
 

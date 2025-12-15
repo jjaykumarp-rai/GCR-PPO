@@ -237,6 +237,7 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     robot: ArticulationCfg = ALPHA_CFG.replace(prim_path="/World/envs/env_.*/Robot")
 
     throwing_reward_scale = 2.05  # align with throwing task
+    projectile_reward_scale = 1.0  # enable projectile reward term
     throw_height_reward_scale = 0.0
     throw_height_target = 0.6
     action_rate_reward_scale = -5e-4  # softer penalty on action deltas
@@ -256,6 +257,7 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     overthrow_margin = 0.5
     overthrow_penalty = -0.5
     post_release_window_s = 0.25
+    release_distance_threshold = 0.25  # detect release once ball is 25cm from hand (projectile reward trigger)
     post_release_accel_penalty_scale = -1e-9
     underthrow_margin = 0.5
     underthrow_penalty = -0.5
@@ -267,7 +269,12 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     #throw_time_reward_scale = 1.0#1.0
     #zvel_reward_scale = 0.75
 
-    arm_dr_range = 0.2
+    # Reset/observation randomization
+    right_arm_init_range = 0.35
+    other_joint_init_range = 0.03
+    joint_pos_noise_range = (-0.05, 0.05)
+    joint_vel_noise_range = (-0.07, 0.07)
+
     obs_lin_vel = True
     obs_ang_vel = True
     obs_proj_grav = True
@@ -283,8 +290,9 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     fixed_throw_dist: float | None = None  # fixed distance for debug/overfit tests
     fixed_target_height: float | None = None  # e.g., 0.5 for fixed height
     min_throw_dist = 2.5  # start curriculum close
-    target_fov_deg = 20.0
-    target_height_range = (0.1, 0.5)
+    max_throw_dist = 4.5
+    target_fov_deg = 10.0
+    target_height_range = (0.3, 1.1)
     # Curriculum controls for distance/height expansion
     initial_max_throw_dist = 3.25
     curriculum_distance_increment = 0.05
@@ -298,7 +306,7 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     use_stability = True # dont need
     no_proj_motion = False
     nonsparse_stability_reward = False # so that stability reward contains only collision and ball not thrown condition
-    max_throw_dist = 3.25
+    max_throw_dist = 5.5
 
     # ---------------------------------------------------------------------
     # things I changed for migration from throwing to replicate_g1_throw
