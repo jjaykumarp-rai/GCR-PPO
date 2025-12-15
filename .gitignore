@@ -1,5 +1,12 @@
+./logs/rsl_rl/
 logs/*
 outputs/
+
+*.pt
+*.pth
+*.ckpt
+*.log
+*.mp4
 
 # Python bytecode caches
 __pycache__/

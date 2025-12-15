@@ -5,20 +5,22 @@
 
 from __future__ import annotations
 
-import gymnasium as gym
-import torch
+import math
 import copy
 from math import gcd
+
+import gymnasium as gym
+import torch
 import isaacsim.core.utils.stage as stage_utils
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.types import ArticulationActions
-from .throwing_env_cfg import ThrowingGeneralEnvCfg
 from isaaclab.envs import DirectRLEnv
 from isaaclab.sensors import ContactSensor
 import torch.nn.functional as F
+from .throwing_env_cfg import ThrowingGeneralEnvCfg
 
 class ThrowingEnv(DirectRLEnv):
     cfg: ThrowingGeneralEnvCfg
@@ -99,16 +101,15 @@ class ThrowingEnv(DirectRLEnv):
         self.stability_timer = 2. # max is 2 (seconds)
 
         if self.cfg.distance_throw:
-            self.distance_range = [4.,4.]
-            self.throwing_commands[:,1] = torch.zeros_like(self.throwing_commands[:,1]).uniform_(0, 0.) # ~theta
-            self.throwing_commands[:,2] = torch.zeros_like(self.throwing_commands[:,2]).uniform_(0., 0*2*torch.pi)#2*torch.pi) # phi
+            self.distance_range = [4., 4.]
+            self.theta_range = [1.0, 1.0]
         else:
-            self.distance_range = [1.,1.] 
+            self.distance_range = [4., 8.] 
             self.theta_range = [0., 1.]
-            self.throwing_commands[:,1] = torch.zeros_like(self.throwing_commands[:,1]).uniform_(self.theta_range[0], self.theta_range[1]) # ~theta
-            self.throwing_commands[:,2] = torch.zeros_like(self.throwing_commands[:,2]).uniform_(0., 2*torch.pi)#2*torch.pi) # phi
-        
-        self.throwing_commands[:,0] = torch.zeros_like(self.throwing_commands[:,0]).uniform_(self.distance_range[0], self.distance_range[1]) # distance
+        self.target_half_fov_rad = min(math.radians(self.cfg.target_fov_deg) / 2.0, math.pi)
+        self.target_heading_offset_rad = math.radians(self.cfg.target_heading_offset_deg)
+        self.robot_yaw_offset_rad = math.radians(self.cfg.robot_yaw_offset_deg)
+        self._sample_throwing_commands(torch.arange(self.num_envs, device=self.device))
         self.released_ball_t = torch.zeros((self.num_envs), device=self.device)-1
         self.action_noise = 0.
 
@@ -265,9 +266,9 @@ class ThrowingEnv(DirectRLEnv):
         for i, pos_idx in enumerate(array_indices):
             full_finger_actions[:, pos_idx] = finger_positions[i]
 
-        # Set finger actions to 0 if hand is open (using smoothed actions)
-        hand_open_mask = (self._actions[:, -1] >= 0)
-        full_finger_actions[~hand_open_mask] = 0
+        # Close fingers when grip action <= 0, open when > 0
+        hand_open_mask = (self._actions[:, -1] > 0)
+        full_finger_actions[hand_open_mask] = 0
 
         # Append to _processed_actions
         self._processed_actions = torch.cat([self._processed_actions, full_finger_actions], dim=1)
@@ -540,7 +541,7 @@ class ThrowingEnv(DirectRLEnv):
             self.body_actions = 1. # max is 100%
 
         if self.cfg.distance_throw:
-            self.distance_range = [max(self.distance_range[0],4),max(self.distance_range[0],4)]
+            self.distance_range = [max(self.distance_range[0], 4), max(self.distance_range[1], 4)]
         
         if self.cfg.no_proj_motion:
             self.cfg.obs_estimdisplace = False
@@ -549,17 +550,11 @@ class ThrowingEnv(DirectRLEnv):
 
         self._actions[env_ids] = 0.0
         self._previous_actions[env_ids] = 0.0
+        # start episodes with hand closed to hold the ball
+        self._actions[env_ids, -1] = -1.0
+        self._previous_actions[env_ids, -1] = -1.0
 
-        if self.cfg.distance_throw:
-            # sample new throwing commands uniformly
-            self.throwing_commands[:,1] = torch.zeros_like(self.throwing_commands[:,1]).uniform_(0, 0.) # ~theta
-            self.throwing_commands[:,2] = torch.zeros_like(self.throwing_commands[:,2]).uniform_(0., 0*2*torch.pi)#2*torch.pi) # phi
-        else:
-            # sample new throwing commands uniformly
-            self.throwing_commands[:,1] = torch.zeros_like(self.throwing_commands[:,1]).uniform_(self.theta_range[0], self.theta_range[1]) # ~theta
-            self.throwing_commands[:,2] = torch.zeros_like(self.throwing_commands[:,2]).uniform_(0., 2*torch.pi)#2*torch.pi) # phi
-        self.throwing_commands[:,0] = torch.zeros_like(self.throwing_commands[:,0]).uniform_(self.distance_range[0], self.distance_range[1]) # distance
-
+        self._sample_throwing_commands(env_ids)
 
         self.target_positions[env_ids] = self.calculate_target_offset(env_ids)
         self.throwing_reward[env_ids] = -1 
@@ -571,12 +566,22 @@ class ThrowingEnv(DirectRLEnv):
         self.released_ball_t[env_ids] = -1
         # Reset robot state
         joint_pos = self._robot.data.default_joint_pos[env_ids] 
-        #joint_pos[:,[1,3,5, 7,9, 11]] += torch.zeros_like(joint_pos[:,[1,3,5, 7,9, 11]]).uniform_(-self.cfg.arm_dr_range, self.cfg.arm_dr_range) # hand .uniform_(-1,1)
-        joint_pos[:,[5,6,9,10,13,14,17,18,21,22]] += torch.zeros_like(joint_pos[:,[5,6,9,10,13,14,17,18,21,22]]).uniform_(-0.3, 0.3) # hand .uniform_(-1,1)
+        # Close finger joints firmly and add mild noise elsewhere
+        finger_indices = [5,6,9,10,13,14,17,18,21,22]
+        closed_fingers = torch.tensor([-0.7, 1.0, -0.7, 1.0, -0.7, 1.0, -0.7, 1.0, -0.7, 1.0], device=self.device)
+        joint_pos[:, finger_indices] = closed_fingers
         joint_pos += torch.zeros_like(joint_pos).uniform_(-0.05, 0.05)
+        joint_pos[:, finger_indices] = closed_fingers  # keep fingers closed after noise
 
         joint_vel = self._robot.data.default_joint_vel[env_ids]
         default_root_state = self._robot.data.default_root_state[env_ids]
+        if self.robot_yaw_offset_rad != 0.0:
+            offset_w = math.cos(self.robot_yaw_offset_rad * 0.5)
+            offset_z = math.sin(self.robot_yaw_offset_rad * 0.5)
+            offset_quat = torch.zeros_like(default_root_state[:, 3:7])
+            offset_quat[:, 0] = offset_w
+            offset_quat[:, 3] = offset_z
+            default_root_state[:, 3:7] = self._quat_multiply(offset_quat, default_root_state[:, 3:7])
         default_root_state[:, :3] += self._terrain.env_origins[env_ids]
 
         self._robot.write_root_pose_to_sim(default_root_state[:, :7], env_ids)
@@ -589,15 +594,13 @@ class ThrowingEnv(DirectRLEnv):
         object_default_state = self.sphere_object.data.default_root_state.clone()[env_ids]
         #object_default_state[:, 7:] = torch.zeros_like(self.sphere_object.data.default_root_state[env_ids, 7:])
         # initialise ball in hand
+        hand_positions = self._robot.data.body_pos_w[:, [-1], :][env_ids].reshape(len(env_ids),3)
         finger_positions = self._robot.data.body_pos_w[:, [-1,-4,-5], :][env_ids]
         finger_positions = torch.mean(finger_positions, dim=1).reshape(len(env_ids),3)
-        hand_positions = self._robot.data.body_pos_w[:, [-1], :][env_ids].reshape(len(env_ids),3)
-        #hand_positions[:,2] += 1
-        vector_AB = finger_positions - hand_positions 
-        distance_AB = torch.norm(vector_AB,dim=1).reshape(len(env_ids),1) # 
-        direction = vector_AB/distance_AB
-        distance_AC = 0. * distance_AB
-        position_c = finger_positions#hand_positions + direction*distance_AC
+        vector_AB = finger_positions - hand_positions
+        distance_AB = torch.norm(vector_AB, dim=1, keepdim=True)
+        safe_direction = torch.where(distance_AB > 1e-4, vector_AB / distance_AB, torch.tensor([0.0, 0.0, 1.0], device=self.device))
+        position_c = hand_positions + safe_direction * 0.02  # place slightly in front of palm
         object_default_state[:, 0:3] += position_c
         object_default_state[:, 7:] = self._robot.data.body_vel_w[:, [-1], :][env_ids].reshape(len(env_ids),6)
         self.sphere_object.write_root_state_to_sim(object_default_state, env_ids)
@@ -640,16 +643,82 @@ class ThrowingEnv(DirectRLEnv):
             if self.cfg.distance_throw:
                 self.distance_range = [min(self.cfg.max_throw_dist, self.distance_range[0] + 0.01),min(self.cfg.max_throw_dist, self.distance_range[1]+0.01)]
             else:
-                self.distance_range = [min(1., self.distance_range[0]),min(5.0, self.distance_range[1]+0.01)]
+                self.distance_range = [self.distance_range[0], min(self.cfg.max_throw_dist, self.distance_range[1] + 0.01)]
                 self.theta_range = [min(0., self.theta_range[0]), min(1.0, self.theta_range[1]+0.01)]
 
+    def _sample_throwing_commands(self, env_ids: torch.Tensor | None):
+        """Sample target distance/angles within a forward FOV and height band."""
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self.device)
+        command_ids = torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
+
+        # Azimuth within forward cone
+        if self.target_half_fov_rad <= 0.0:
+            phi_samples = torch.zeros_like(self.throwing_commands[command_ids, 2])
+        else:
+            phi_samples = torch.zeros_like(self.throwing_commands[command_ids, 2]).uniform_(
+                -self.target_half_fov_rad, self.target_half_fov_rad
+            )
+
+        # Sample distance and height, then derive polar elevation (theta)
+        dist_min, dist_max = self.distance_range
+        z_min, z_max = self.cfg.target_height_range
+        margin = 0.05
+
+        z_samples = torch.zeros_like(self.throwing_commands[command_ids, 0]).uniform_(z_min, z_max)
+        z_clamped = torch.clamp(z_samples, min=0.0, max=dist_max - margin)
+
+        dist_samples = torch.zeros_like(self.throwing_commands[command_ids, 0]).uniform_(dist_min, dist_max)
+        dist_final = torch.max(dist_samples, z_clamped + margin)
+
+        theta_cos = torch.clamp(z_clamped / dist_final, -1.0, 1.0)
+
+        if self.cfg.distance_throw:
+            # Keep previous distance-throw semantics (purely forward, flat)
+            theta_cos = torch.ones_like(theta_cos)
+            phi_samples = torch.zeros_like(phi_samples)
+
+        self.throwing_commands[command_ids, 0] = dist_final
+        self.throwing_commands[command_ids, 1] = theta_cos
+        self.throwing_commands[command_ids, 2] = phi_samples
+
+    def _get_base_yaw(self, env_ids: torch.Tensor) -> torch.Tensor:
+        """Extract the base yaw for each env index."""
+        command_ids = torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
+        base_quats = self._robot.data.root_quat_w[command_ids]
+        w, x, y, z = base_quats.unbind(dim=1)
+        yaw = torch.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+        return torch.where(torch.isnan(yaw), torch.zeros_like(yaw), yaw)
+
+    @staticmethod
+    def _quat_multiply(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
+        """Multiply two quaternions (w, x, y, z)."""
+        w1, x1, y1, z1 = q1.unbind(dim=1)
+        w2, x2, y2, z2 = q2.unbind(dim=1)
+        w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
+        x = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
+        y = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
+        z = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
+        return torch.stack((w, x, y, z), dim=1)
+
     def calculate_target_offset(self, env_ids: torch.Tensor) -> torch.Tensor:
-        res = torch.zeros((len(env_ids),3),device=self.device)
-        dist, theta, phi = self.throwing_commands[env_ids, 0], torch.arccos(self.throwing_commands[env_ids,1]), self.throwing_commands[env_ids,2]
-        x = dist * torch.sin(theta) * torch.cos(phi)
-        y = dist * torch.sin(theta) * torch.sin(phi)
-        z = dist * torch.cos(theta)
-        res = torch.stack((x,y,z),dim=1)
+        command_ids = torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
+        dist = self.throwing_commands[command_ids, 0]
+        theta_cos = torch.clamp(self.throwing_commands[command_ids, 1], -1.0, 1.0)
+        phi_body = self.throwing_commands[command_ids, 2]
+        theta = torch.arccos(theta_cos)
+
+        x_local = dist * torch.sin(theta) * torch.cos(phi_body)
+        y_local = dist * torch.sin(theta) * torch.sin(phi_body)
+        z_local = dist * torch.cos(theta)
+
+        yaw = torch.full_like(x_local, self.target_heading_offset_rad)
+        cos_yaw = torch.cos(yaw)
+        sin_yaw = torch.sin(yaw)
+        x_world = x_local * cos_yaw - y_local * sin_yaw
+        y_world = x_local * sin_yaw + y_local * cos_yaw
+
+        res = torch.stack((x_world, y_world, z_local), dim=1)
         return res.squeeze(-1)
     
     def check_ball_displacement(self, env_ids: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
