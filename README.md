@@ -84,8 +84,8 @@ Refer to the original [README](README.og.md) for details about GCR-PPO.
 
 ### Multi-Objective Experiments 🎯
 Supported example tasks:
-- `Throwing-G1-General` (multi-objective humanoid running)
-- `Isaac-Replicate-G1-Throw-Direct-v0` (full-body throwing)
+- `Throwing-G1-General` (humanoid)
+- `Isaac-Replicate-G1-Throw-Direct-v0` (alpha)
 
 ```bash
 ./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/train.py \
