@@ -4,6 +4,19 @@ Refer to the CONDOR-EPIC: [CDR-1586](https://theaiinstitute.atlassian.net/browse
 
 This is a forked setup from [GCR-PPO](https://github.com/humphreymunn/GCR-PPO), a focused fork/adaptation of [IsaacLab](https://github.com/isaac-sim/IsaacLab) targeting **IsaacLab 2.1.0** with **RSL-RL**.
 
+## Contents
+- [Alpha RL Throw](#alpha-rl-throw-)
+- [Quick Start](#quick-start-)
+  - [Requirements](#requirements-)
+  - [Setup](#setup-️)
+- [HOW TO RUN](#how-to-run-️)
+  - [Baselines and Variants](#baselines-and-variants-)
+  - [Multi-Objective Experiments](#multi-objective-experiments-)
+  - [Output and Logs](#output-and-logs-)
+  - [Play a Trained Policy](#play-a-trained-policy-)
+  - [Media](#media-)
+  - [Adding New Tasks](#adding-new-tasks-)
+
 Relevant background 🎯:
 - 🔧 Optimization-only throwing on fixed-base, single-arm manipulators.
 - 🤖 Recent RL work on throwing with single-arm manipulators on legged bases (Anymal/Spot).
