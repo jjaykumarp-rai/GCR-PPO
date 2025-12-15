@@ -205,8 +205,8 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     target_cfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/target",
         spawn=sim_utils.CylinderCfg(
-            radius=0.15,          # disk radius (m)
-            height=0.01,          # very thin -> disk-like
+            radius=0.4,          # disk radius (m)
+            height=0.03,          # thicker disk
             axis="X",             # axis along X => faces normal to X
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 kinematic_enabled=True,
@@ -224,7 +224,7 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     )
 
     # scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=8.0, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=6.0, replicate_physics=True)
 
     # events
     events: EventCfg = EventCfg()
@@ -249,7 +249,12 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     #throw_time_reward_scale = 1.0#1.0
     #zvel_reward_scale = 0.75
 
-    arm_dr_range = 0.3
+    # Reset/observation randomization
+    right_arm_init_range = 0.35
+    other_joint_init_range = 0.03
+    joint_pos_noise_range = (-0.05, 0.05)
+    joint_vel_noise_range = (-0.07, 0.07)
+
     obs_lin_vel = True
     obs_ang_vel = False
     obs_proj_grav = True
@@ -287,8 +292,11 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     distance_throw = False
     arm_only = False
 
+    # Which hand throws (affects target placement side and grasp link choice)
+    throw_hand_side = "right"
+
     # need to check if this is required
-    roll_reward_scale =  0.43
+    roll_reward_scale = 0.0
     stability_reward_scale = 0.25#0.00001#1 (0.2 before)
     r_stability_thresh = 0.22 
     # ---------------------------------------------------------------------

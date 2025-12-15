@@ -20,8 +20,19 @@ import random
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
-parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
-parser.add_argument("--video_interval", type=int, default=2000, help="Interval between video recordings (in steps).")
+parser.add_argument(
+    "--video_length",
+    type=int,
+    default=0,
+    help="Length of the recorded video (in steps). If <=0, defaults to ~20 seconds based on env step_dt.",
+)
+# Interpret video_interval as iterations between videos (set via CLI); converted to steps later using num_steps_per_env.
+parser.add_argument(
+    "--video_interval",
+    type=int,
+    default=5,
+    help="Interval between video recordings (in iterations). If <=0 while --video is set, falls back to 5 iterations.",
+)
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
@@ -218,10 +229,33 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # wrap for video recording
     if args_cli.video:
+        if args_cli.video_interval and args_cli.video_interval > 0:
+            iter_interval = args_cli.video_interval
+        else:
+            iter_interval = 5
+        step_interval = iter_interval * agent_cfg.num_steps_per_env
+        # Derive video length in steps: use user value if provided, else ~20 seconds by env step time.
+        video_length_steps = None
+        if args_cli.video_length and args_cli.video_length > 0:
+            video_length_steps = args_cli.video_length
+        else:
+            try:
+                if hasattr(env.unwrapped, "step_dt"):
+                    step_dt = env.unwrapped.step_dt
+                elif hasattr(env.unwrapped, "physics_dt"):
+                    step_dt = env.unwrapped.physics_dt * getattr(env.unwrapped.cfg, "decimation", 1)
+                else:
+                    step_dt = None
+                if step_dt and step_dt > 0:
+                    video_length_steps = int(20.0 / step_dt)
+            except Exception:
+                video_length_steps = None
+        if video_length_steps is None or video_length_steps <= 0:
+            video_length_steps = 1000
         video_kwargs = {
             "video_folder": os.path.join(log_dir, "videos", "train"),
-            "step_trigger": lambda step: step % args_cli.video_interval == 0,
-            "video_length": args_cli.video_length,
+            "step_trigger": lambda step: step % step_interval == 0,
+            "video_length": video_length_steps,
             "disable_logger": True,
         }
         print("[INFO] Recording videos during training.")
