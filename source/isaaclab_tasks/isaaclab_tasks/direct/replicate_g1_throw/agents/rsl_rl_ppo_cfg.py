@@ -10,15 +10,15 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 
 @configclass
 class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
-    num_steps_per_env = 26
-    max_iterations = 4000
+    num_steps_per_env = 30
+    max_iterations = 12000
     save_interval = 50
     experiment_name = "replicate_g1_throw"
     empirical_normalization = False
     policy = RslRlPpoActorCriticCfg(
-        init_noise_std=1.0,
-        actor_hidden_dims=[32, 32],
-        critic_hidden_dims=[32, 32],
+        init_noise_std=0.25,
+        actor_hidden_dims=[768, 512, 256],
+        critic_hidden_dims=[768, 512, 256],
         activation="elu",
     )
     algorithm = RslRlPpoAlgorithmCfg(
@@ -27,8 +27,8 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
         clip_param=0.2,
         entropy_coef=0.0003552,
         num_learning_epochs=5,
-        num_mini_batches=4,
-        learning_rate=1.0e-3,
+        num_mini_batches=6,
+        learning_rate=5.0e-4,
         schedule="adaptive",
         gamma=0.99,
         lam=0.95,
