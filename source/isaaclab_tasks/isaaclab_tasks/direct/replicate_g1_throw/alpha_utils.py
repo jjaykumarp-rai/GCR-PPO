@@ -1,3 +1,5 @@
+import os
+
 from isaaclab.actuators.actuator_cfg import PDActuatorCfg
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg
@@ -103,7 +105,12 @@ def _make_alpha_impedance_actuator() -> PDActuatorCfg:
     )
 
 
-ALPHA_USD = "/home/jjaykumarp/Projects/my_alpha_usd/alpha/alpha.usd"
+_default_alpha_usd = os.path.expanduser("~/alpha_usd/alpha/alpha.usd")
+ALPHA_USD = os.environ.get("ALPHA_USD_PATH", _default_alpha_usd)
+if not os.path.isfile(ALPHA_USD):
+    raise FileNotFoundError(
+        f"Alpha USD not found at '{ALPHA_USD}'. Set ALPHA_USD_PATH to the alpha.usd file."
+    )
 
 ALPHA_CFG = ArticulationCfg(
     prim_path="/World/envs/env_.*/Robot",

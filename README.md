@@ -64,6 +64,15 @@ conda activate alpha_throw4.5
 
 Refer to the original [README](README.og.md) for details about GCR-PPO.
 
+## Download the Alpha Robot Model 📥
+
+1) Grab the USD from RAI Google Drive: [Alpha.usd](https://drive.google.com/file/d/1ExNlJsrRaUB7UgwASxiEieDKn63ogfe-/view?usp=drive_link).  
+2) Unzip into your home directory (default expected path: `~/Projects/alpha_usd/alpha/alpha.usd`).  
+3) Point the env var at the file (or override the default):  
+   ```sh
+   export ALPHA_USD_PATH=/absolute/path/to/alpha_usd/alpha/alpha.usd
+   ```
+
 ## HOW TO RUN ▶️
 
 ### Baselines and Variants 🏁
