@@ -18,6 +18,7 @@ from isaaclab.envs import DirectRLEnv
 from isaaclab.sensors import ContactSensor
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 import isaacsim.core.utils.stage as stage_utils
+import omni.ui as ui
 
 from .replicate_g1_throw_env_cfg import ReplicateG1ThrowEnvCfg
 from .alpha_utils import (
@@ -102,7 +103,6 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
                 "projectile_rew",
                 "stability",
                 "action_rate_l2",
-                "dof_vel_l2",
                 "dof_torques_l2",
                 "dof_acc_l2",
                 "ballrel_rew",
@@ -137,6 +137,7 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
         self.target_half_fov_rad = min(math.radians(self.cfg.target_fov_deg) / 2.0, math.pi)
         self.target_heading_offset_rad = math.radians(self.cfg.target_heading_offset_deg)
         self.robot_yaw_offset_rad = math.radians(self.cfg.robot_yaw_offset_deg)
+        self._error_label = None
 
         if self.cfg.no_proj_motion:
             self.cfg.obs_estimdisplace = False
@@ -540,9 +541,12 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
         self.released_ball_t[env_ids] = -1.0
         self._joint_vel_violation[env_ids] = False
 
-        # sample commands + compute target offsets
-        self._sample_throwing_commands(env_ids)
-        self.target_positions[env_ids] = self.calculate_target_offset(env_ids)
+        # sample commands + compute target offsets (or lock to fixed target if provided)
+        if getattr(self.cfg, "fixed_target_offset", None) is not None:
+            self._set_fixed_target(env_ids)
+        else:
+            self._sample_throwing_commands(env_ids)
+            self.target_positions[env_ids] = self.calculate_target_offset(env_ids)
 
         # joint reset
         joint_pos = self._robot.data.default_joint_pos[env_ids].clone()
@@ -711,6 +715,30 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
         self.throwing_commands[command_ids, 1] = theta_cos
         self.throwing_commands[command_ids, 2] = phi_samples
 
+    def _set_fixed_target(self, env_ids: torch.Tensor) -> None:
+        """Lock target to a fixed offset and back-compute commands for consistency."""
+        env_ids = torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
+        offset = torch.as_tensor(self.cfg.fixed_target_offset, device=self.device, dtype=torch.float32)
+        offset = offset.unsqueeze(0).expand(len(env_ids), -1)
+
+        # Rotate offset into body frame (undo base yaw + heading offset)
+        base_yaw = self._get_base_yaw(env_ids)
+        yaw = base_yaw + self.target_heading_offset_rad
+        cos_yaw, sin_yaw = torch.cos(yaw), torch.sin(yaw)
+
+        x_world, y_world, z_world = offset.unbind(dim=1)
+        x_local = x_world * cos_yaw + y_world * sin_yaw
+        y_local = -x_world * sin_yaw + y_world * cos_yaw
+
+        dist = torch.sqrt(x_local**2 + y_local**2 + z_world**2).clamp_min(1e-6)
+        theta_cos = torch.clamp(z_world / dist, -1.0, 1.0)
+        phi = torch.atan2(y_local, x_local)
+
+        self.throwing_commands[env_ids, 0] = dist
+        self.throwing_commands[env_ids, 1] = theta_cos
+        self.throwing_commands[env_ids, 2] = phi
+        self.target_positions[env_ids] = offset
+
     def calculate_target_offset(self, env_ids: torch.Tensor) -> torch.Tensor:
         command_ids = torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
         dist = self.throwing_commands[command_ids, 0]
@@ -771,7 +799,30 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
             batch_idx = torch.arange(len(env_ids), device=self.device)
             time_at_min = time_tensor[idx_min, batch_idx]
 
+        # log accuracy (mean per env) for debugging/eval
+        if not hasattr(self, "extras"):
+            self.extras = {}
+        self.extras["log"] = self.extras.get("log", {})
+        self.extras["log"]["throw/accuracy_mean"] = disp_min.mean()
+        # show in GUI if enabled
+        if self.sim.render_mode.value != self.sim.render_mode.NO_GUI_OR_RENDERING:
+            self._update_error_overlay(disp_min.mean().item())
         return disp_min, time_at_min
+
+    def _update_error_overlay(self, error_val: float) -> None:
+        """Render a small overlay in the GUI showing mean throwing error."""
+        try:
+            if self._error_label is None:
+                self._error_window = ui.Window("Throwing Error", width=220, height=60, dockPreference=ui.DockPreference.TOP)
+                with self._error_window.frame:
+                    with ui.VStack():
+                        ui.Label("Throwing Error (mean, normalized)", style={"font_size": 14})
+                        self._error_label = ui.Label(f"{error_val:.3f}", style={"font_size": 18, "color": 0xFF00FF00})
+            else:
+                self._error_label.text = f"{error_val:.3f}"
+        except Exception:
+            # If UI isn't available or fails (headless), skip overlay.
+            pass
 
     # ---------------------------------------------------------------------
     # Rendering target (FIX: uses target_world only; no extra offsets)

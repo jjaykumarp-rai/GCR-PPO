@@ -27,7 +27,7 @@ import isaaclab.sim as sim_utils
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 from isaaclab.assets import RigidObjectCfg
 from isaaclab.sensors import ContactSensorCfg, RayCasterCfg, patterns
-from .alpha_utils import ALPHA_CFG
+from .alpha_utils import ALPHA_CFG, make_alpha_cfg
 
 
 COBBLESTONE_ROAD_CFG = terrain_gen.TerrainGeneratorCfg(
@@ -234,7 +234,9 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     )
 
     # robot
-    robot: ArticulationCfg = ALPHA_CFG.replace(prim_path="/World/envs/env_.*/Robot")
+    # PD gain scaling for play/eval; default 1.0 keeps original gains.
+    actuator_gain_scale: float = 1.0
+    robot: ArticulationCfg = make_alpha_cfg(actuator_gain_scale).replace(prim_path="/World/envs/env_.*/Robot")
 
     throwing_reward_scale = 3.0  # prioritize target accuracy
     throw_height_reward_scale = 1.0  # secondary to distance/accuracy
@@ -256,7 +258,8 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     joint_vel_noise_range = (-0.07, 0.07)
 
     obs_lin_vel = True
-    obs_ang_vel = False
+    # keep angular velocity in obs to match trained checkpoints (61-dim obs)
+    obs_ang_vel = True
     obs_proj_grav = True
     
     obs_baseheight = False
@@ -278,6 +281,10 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     # Rotate target heading relative to the world forward (+X). Alpha faces +Y, so add 90 deg.
     target_heading_offset_deg = 90.0
     robot_yaw_offset_deg = 0.0
+    # Optional: lock target to a fixed offset (env-local frame). Example: (4.5, 0.0, 1.5)
+    fixed_target_offset: tuple | None = None
+    # Optional: lock target to a fixed offset (env-local frame). Example: (4.5, 0.0, 1.5)
+    fixed_target_offset: tuple | None = None
 
     # just for experiments...
     use_stability = True # dont need

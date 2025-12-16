@@ -1,4 +1,5 @@
-from isaaclab.actuators.actuator_cfg import PDActuatorCfg
+from isaaclab.actuators.actuator_cfg import DelayedPDActuatorCfg
+
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg
 
@@ -43,91 +44,104 @@ FINGER_JOINTS = [
     "LTJ1", "LIJ1", "LPJ1", "LTJ2", "LIJ2", "LPJ2",
 ]
 
+# Base (unscaled) PD gains
+BASE_STIFFNESS = {
+    # torso
+    "TJ1": 937.0,
+    # right arm
+    "RJ1": 150.0,
+    "RJ2": 167.0,
+    "RJ3": 167.0,
+    "RJ4": 167.0,
+    "RJ5": 13.4,
+    "RJ6": 3.25,
+    "RJ7": 3.25,
+    # left arm (mirrored)
+    "LJ1": 150.0,
+    "LJ2": 167.0,
+    "LJ3": 167.0,
+    "LJ4": 167.0,
+    "LJ5": 13.4,
+    "LJ6": 3.25,
+    "LJ7": 3.25,
+}
 
-def _make_alpha_impedance_actuator() -> PDActuatorCfg:
+BASE_DAMPING = {
+    "TJ1": 4.7,
+    "RJ1": 3.1,
+    "RJ2": 6.6,
+    "RJ3": 6.6,
+    "RJ4": 6.6,
+    "RJ5": 0.3,
+    "RJ6": 0.3,
+    "RJ7": 0.3,
+    "LJ1": 3.1,
+    "LJ2": 6.6,
+    "LJ3": 6.6,
+    "LJ4": 6.6,
+    "LJ5": 0.3,
+    "LJ6": 0.3,
+    "LJ7": 0.3,
+}
+
+
+def _make_alpha_impedance_actuator(gain_scale: float = 1.0) -> DelayedPDActuatorCfg:
     """Standard PD actuator for torso + right arm + left arm.
     Fingers are controlled separately in the env (not here).
     """
     joint_names = TORSO_JOINTS + RIGHT_ARM_JOINTS + LEFT_ARM_JOINTS
 
-    stiffness = {
-        # torso
-        "TJ1": 937.0,
-        # right arm
-        "RJ1": 150.0,
-        "RJ2": 167.0,
-        "RJ3": 167.0,
-        "RJ4": 167.0,
-        "RJ5": 13.4,
-        "RJ6": 3.25,
-        "RJ7": 3.25,
-        # left arm (mirrored)
-        "LJ1": 150.0,
-        "LJ2": 167.0,
-        "LJ3": 167.0,
-        "LJ4": 167.0,
-        "LJ5": 13.4,
-        "LJ6": 3.25,
-        "LJ7": 3.25,
-    }
-
-    damping = {
-        "TJ1": 4.7,
-        "RJ1": 3.1,
-        "RJ2": 6.6,
-        "RJ3": 6.6,
-        "RJ4": 6.6,
-        "RJ5": 0.3,
-        "RJ6": 0.3,
-        "RJ7": 0.3,
-        "LJ1": 3.1,
-        "LJ2": 6.6,
-        "LJ3": 6.6,
-        "LJ4": 6.6,
-        "LJ5": 0.3,
-        "LJ6": 0.3,
-        "LJ7": 0.3,
-    }
+    stiffness = {k: v * gain_scale for k, v in BASE_STIFFNESS.items()}
+    damping = {k: v * gain_scale for k, v in BASE_DAMPING.items()}
 
     torque_limits = {
         name: JOINT_LIMITS.get(name, JOINT_LIMITS["RJ5"])["tau"]
         for name in joint_names
     }
 
-    return PDActuatorCfg(
+    return DelayedPDActuatorCfg(
         joint_names_expr=joint_names,
         stiffness=stiffness,
         damping=damping,
         armature=0.01,
         effort_limit=torque_limits,
+        min_delay=1,
+        max_delay=1,
     )
 
 
-ALPHA_USD = "/home/jjaykumarp/Projects/my_alpha_usd/alpha/alpha.usd"
+ALPHA_USD = "/home/jjaykumarp/alpha_usd/alpha/alpha.usd"
 
-ALPHA_CFG = ArticulationCfg(
-    prim_path="/World/envs/env_.*/Robot",
-    spawn=sim_utils.UsdFileCfg(
-        usd_path=ALPHA_USD,
-        copy_from_source=True,
-        visual_material_path="material",
-        activate_contact_sensors=True,
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(
-            disable_gravity=False,
-            retain_accelerations=False,
-            linear_damping=0.0,
-            angular_damping=0.0,
-            max_linear_velocity=None,
-            max_angular_velocity=None,
-            max_depenetration_velocity=1.0,
+
+def make_alpha_cfg(gain_scale: float = 1.0) -> ArticulationCfg:
+    """Factory for Alpha articulation with optional PD gain scaling (default=1.0 keeps original gains)."""
+    return ArticulationCfg(
+        prim_path="/World/envs/env_.*/Robot",
+        spawn=sim_utils.UsdFileCfg(
+            usd_path=ALPHA_USD,
+            copy_from_source=True,
+            visual_material_path="material",
+            activate_contact_sensors=True,
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                disable_gravity=False,
+                retain_accelerations=False,
+                linear_damping=0.0,
+                angular_damping=0.0,
+                max_linear_velocity=None,
+                max_angular_velocity=None,
+                max_depenetration_velocity=1.0,
+            ),
+            articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+                enabled_self_collisions=True,
+                solver_position_iteration_count=4,
+                solver_velocity_iteration_count=0,
+            ),
         ),
-        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-            enabled_self_collisions=True,
-            solver_position_iteration_count=4,
-            solver_velocity_iteration_count=0,
-        ),
-    ),
-    actuators={
-        "alpha_arm": _make_alpha_impedance_actuator(),
-    },
-)
+        actuators={
+            "alpha_arm": _make_alpha_impedance_actuator(gain_scale=gain_scale),
+        },
+    )
+
+
+# Default config (unscaled gains)
+ALPHA_CFG = make_alpha_cfg()
