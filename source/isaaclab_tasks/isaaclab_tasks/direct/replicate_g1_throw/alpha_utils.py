@@ -12,7 +12,7 @@ Notes for the team:
 
 import os
 
-from isaaclab.actuators.actuator_cfg import PDActuatorCfg
+from isaaclab.actuators.actuator_cfg import DelayedPDActuatorCfg
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg
 
@@ -71,7 +71,7 @@ FINGER_JOINTS = [
 ]
 
 
-def _make_alpha_impedance_actuator() -> PDActuatorCfg:
+def _make_alpha_impedance_actuator() -> DelayedPDActuatorCfg:
     """Create the standard impedance-style PD actuator config for Alpha.
 
     This actuator targets the torso + both arms using per-joint stiffness/damping
@@ -82,7 +82,7 @@ def _make_alpha_impedance_actuator() -> PDActuatorCfg:
       They are expected to be controlled separately at the environment level.
 
     Returns:
-        PDActuatorCfg: IsaacLab actuator configuration used in `ALPHA_CFG`.
+        DelayedPDActuatorCfg: IsaacLab actuator configuration used in `ALPHA_CFG`.
     """
     # Actuator will apply to all torso + arm joints.
     joint_names = TORSO_JOINTS + RIGHT_ARM_JOINTS + LEFT_ARM_JOINTS
@@ -138,7 +138,7 @@ def _make_alpha_impedance_actuator() -> PDActuatorCfg:
     }
 
     # Build and return the actuator config.
-    return PDActuatorCfg(
+    return DelayedPDActuatorCfg(
         # `joint_names_expr` can take a list; IsaacLab treats these as the controlled joints.
         joint_names_expr=joint_names,
         stiffness=stiffness,

@@ -160,7 +160,6 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
                 "projectile_rew",
                 "stability",
                 "action_rate_l2",
-                "dof_vel_l2",
                 "dof_torques_l2",
                 "dof_acc_l2",
                 "ballrel_rew",
@@ -473,6 +472,7 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
                 tensor
                 for tensor in (
                     self._robot.data.root_ang_vel_b if self.cfg.obs_ang_vel else None,
+                    self._robot.data.root_lin_vel_b if self.cfg.obs_lin_vel else None,
                     self._robot.data.projected_gravity_b if self.cfg.obs_proj_grav else None,
                     (roll.float() + (torch.rand_like(roll) * 0.02 - 0.01)).unsqueeze(-1) if self.cfg.obs_roll else None,
                     self.throwing_commands,
