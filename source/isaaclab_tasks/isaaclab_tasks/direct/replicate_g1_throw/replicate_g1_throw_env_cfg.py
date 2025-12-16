@@ -293,7 +293,7 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     target_cfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/target",
         spawn=sim_utils.CylinderCfg(
-            radius=0.5,   # disk radius (m)
+            radius=0.55,   # disk radius (m)
             height=0.03,  # disk thickness (m)
             axis="X",     # cylinder axis along X => face normal aligns with +X/-X
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
@@ -313,7 +313,7 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     # -------------------------------------------------------------------------
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
         num_envs=4096,
-        env_spacing=4.0,
+        env_spacing=6.0,
         replicate_physics=True,
     )
 
@@ -407,14 +407,20 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     # -------------------------------------------------------------------------
     # Target placement controls
     # -------------------------------------------------------------------------
-    min_throw_dist = 2.5
-    target_fov_deg = 30.0
-    target_height_range = (0.1, 1.0)
+    min_throw_dist = 1
+    target_fov_deg = 20.0
+    target_height_range = (0.1, 1)
 
     # Rotate target heading relative to the world forward (+X).
     # Comment indicates Alpha faces +Y, so offset is used to align frames.
     target_heading_offset_deg = 90.0
     robot_yaw_offset_deg = 0.0
+    target_board_plane_threshold = 0.2
+    target_board_plane_axis = 1  # axis index whose coordinate defines the target plane (0:x, 1:y, 2:z)
+
+    # Optional overrides to seed curriculum initialization
+    initial_max_throw_dist: float = 0.0
+    initial_target_height_range: tuple[float, float] = (0.0, 0.0)
 
     # -------------------------------------------------------------------------
     # Experimental flags / ablations
@@ -422,13 +428,13 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     use_stability = True                  # stability reward enabled (comment suggests may not be needed)
     no_proj_motion = False
     nonsparse_stability_reward = False    # stability reward only contains collision + ball-not-thrown terms
-    max_throw_dist = 4.0
+    max_throw_dist = 3.5
 
     # -------------------------------------------------------------------------
     # Presentation helpers
     # -------------------------------------------------------------------------
-    sequential_distance_mode = True
-    sequential_distance_start = 2.5
+    sequential_distance_mode = False
+    sequential_distance_start = 3.5
     sequential_distance_step = 0.1
 
     # ---------------------------------------------------------------------

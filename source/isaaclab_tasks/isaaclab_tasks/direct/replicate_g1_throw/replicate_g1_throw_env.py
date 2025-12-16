@@ -19,6 +19,10 @@ from isaaclab.envs import DirectRLEnv
 from isaaclab.sensors import ContactSensor
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 import isaacsim.core.utils.stage as stage_utils
+try:
+    import omni.ui as ui
+except ModuleNotFoundError:
+    ui = None
 
 from .replicate_g1_throw_env_cfg import ReplicateG1ThrowEnvCfg
 from .alpha_utils import (
@@ -124,6 +128,11 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
 
         # target_positions is an *offset in env-local frame* (world computed via _target_world)
         self.target_positions = torch.zeros(self.num_envs, 3, device=self.device)
+        axis = int(getattr(self.cfg, "target_board_plane_axis", 1))
+        if axis not in (0, 1, 2):
+            raise ValueError(f"target_board_plane_axis must be 0/1/2 but got {axis}")
+        self._target_board_plane_axis = axis
+        self._target_board_inplane_axes = [i for i in range(3) if i != axis]
 
         # ---------------------------------------------------------------------
         # Per-episode bookkeeping buffers
@@ -136,6 +145,14 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
 
         self.landing_time = torch.ones(self.num_envs, device=self.device) * -1
         self.target_hit_given = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+        self.ground_hit_given = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+        self.total_target_hits = 0
+        self.total_ground_hits = 0
+        self.total_throw_attempts = 0
+        self._target_hit_label: "ui.Label | None" = None
+        self._ground_hit_label: "ui.Label | None" = None
+        self._cumulative_hit_label: "ui.Label | None" = None
+        self._attempt_label: "ui.Label | None" = None
 
         self.sum_open_hand_action = torch.zeros(self.num_envs, device=self.device)
         self.release_ball_pos = torch.zeros(self.num_envs, 3, device=self.device)
@@ -150,6 +167,7 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
         self.action_noise = 0.0
         self.prev_velocity = torch.zeros(self.num_envs, 3, device=self.device) - 1000
 
+        # Throw statistics
         # Optional safety termination flags
         self._joint_vel_violation = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
@@ -173,6 +191,8 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
             self._ball_trace_draw_interface = acquire_debug_draw_interface()
             self._SimplexPointCls = SimplexPoint
         self._ball_trace_default_color_int = self._rgba_to_argb(self.ball_trace_color)
+
+        self._init_target_stats_ui()
 
         # ---------------------------------------------------------------------
         # Reward logging buffers (used for reporting + curriculum heuristics)
@@ -205,13 +225,16 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
             self.theta_range = [1.0, 1.0]
         else:
             # Curriculum starts at an initial maximum distance and expands to max_throw_dist
-            init_max_dist = getattr(self.cfg, "initial_max_throw_dist", self.cfg.max_throw_dist)
+            init_max_dist = getattr(self.cfg, "initial_max_throw_dist", 0.0)
+            if init_max_dist <= 0.0:
+                init_max_dist = self.cfg.max_throw_dist
             init_max_dist = min(self.cfg.max_throw_dist, max(self.cfg.min_throw_dist, init_max_dist))
             self.distance_range = [self.cfg.min_throw_dist, init_max_dist]
             self.theta_range = [0.0, 1.0]
 
-        # Curriculum initialization for target height range
-        init_hmin, init_hmax = getattr(self.cfg, "initial_target_height_range", self.cfg.target_height_range)
+        init_hmin, init_hmax = getattr(self.cfg, "initial_target_height_range", (0.0, 0.0))
+        if init_hmax <= 0.0 or init_hmin < 0.0:
+            init_hmin, init_hmax = self.cfg.target_height_range
         hmin = max(self.cfg.target_height_range[0], init_hmin)
         hmax = min(self.cfg.target_height_range[1], init_hmax)
         if hmax < hmin:
@@ -860,9 +883,30 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
 
         terminated = hit_ground | too_far | no_release_timeout | joint_vel_violation
 
-        # Success definition: landed within a radius of the target
-        success_radius = float(getattr(self.cfg, "success_radius", 0.3))
-        success = hit_ground & (torch.norm(ball_pos - target_pos, dim=1) < success_radius)
+        # Success definition: target board detection
+        success_radius = float(getattr(self.cfg, "success_radius", 0.55))
+        board_plane_threshold = float(getattr(self.cfg, "target_board_plane_threshold", 0.2))
+        planar_axes = self._target_board_inplane_axes
+        planar_distance = torch.norm(ball_pos[:, planar_axes] - target_pos[:, planar_axes], dim=1)
+
+        target_dist = torch.norm(ball_pos - target_pos, dim=1)
+        board_hit_mask = released & (target_dist < success_radius)
+        if board_hit_mask.any():
+            new_hits = board_hit_mask & (~self.target_hit_given)
+            if new_hits.any():
+                self.target_hit_given[new_hits] = True
+                self.total_target_hits += int(new_hits.sum().item())
+                self._refresh_target_stats_ui()
+
+        ground_xy_dist = torch.norm(ball_pos[:, :2] - target_pos[:, :2], dim=1)
+        ground_close = hit_ground & (~board_hit_mask) & (ground_xy_dist < success_radius)
+        new_ground_hits = ground_close & (~self.ground_hit_given)
+        if new_ground_hits.any():
+            self.ground_hit_given[new_ground_hits] = True
+            self.total_ground_hits += int(new_ground_hits.sum().item())
+            self._refresh_target_stats_ui()
+
+        success = board_hit_mask & hit_ground
 
         # Store termination info for logging / debugging
         self.extras["termination"] = {
@@ -891,6 +935,10 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
         # Treat None or full-length list as "reset all"
         if env_ids is None or len(env_ids) == self.num_envs:
             env_ids = self._robot._ALL_INDICES
+
+        reset_count = int(env_ids.numel()) if isinstance(env_ids, torch.Tensor) else len(env_ids)
+        self.total_throw_attempts += reset_count
+        self._refresh_target_stats_ui()
 
         # Reset robot internal buffers and base env bookkeeping
         self._robot.reset(env_ids)
@@ -928,6 +976,7 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
         self.landing_time[env_ids] = -1.0
         self.throwing_reward_given[env_ids] = False
         self.target_hit_given[env_ids] = False
+        self.ground_hit_given[env_ids] = False
         self.not_released_ball[env_ids] = True
         self.sum_open_hand_action[env_ids] = 0.0
         self.released_ball_t[env_ids] = -1.0
@@ -1054,6 +1103,50 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
         ball_state[:, 3:7] = self.sphere_object.data.default_root_state[env_ids, 3:7]
         ball_state[:, 7:] = 0.0
         self.sphere_object.write_root_state_to_sim(ball_state, env_ids)
+
+    def _init_target_stats_ui(self) -> None:
+        """Create a simple UI panel showing target/ground hits."""
+        if ui is None or not self.sim.has_gui():
+            return
+        window = getattr(self, "_window", None)
+        if window is None:
+            return
+        main_vstack = window.ui_window_elements.get("main_vstack")
+        if main_vstack is None:
+            return
+        with main_vstack:
+            with ui.CollapsableFrame(
+                title="Target Board Stats",
+                width=ui.Fraction(1),
+                collapsed=False,
+            ):
+                with ui.VStack(spacing=4, height=0):
+                    self._target_hit_label = ui.Label(self._format_hit_text())
+                    self._ground_hit_label = ui.Label(self._format_ground_text())
+                    self._cumulative_hit_label = ui.Label(self._format_cumulative_text())
+                    self._attempt_label = ui.Label(self._format_attempt_text())
+
+    def _format_hit_text(self) -> str:
+        return f"Target hits: {self.total_target_hits}"
+
+    def _format_ground_text(self) -> str:
+        return f"Ground hits: {self.total_ground_hits}"
+
+    def _format_cumulative_text(self) -> str:
+        return f"Cumulative hits: {self.total_target_hits + self.total_ground_hits}"
+
+    def _format_attempt_text(self) -> str:
+        return f"Total throws: {self.total_throw_attempts}"
+
+    def _refresh_target_stats_ui(self) -> None:
+        if self._target_hit_label is not None:
+            self._target_hit_label.text = self._format_hit_text()
+        if self._ground_hit_label is not None:
+            self._ground_hit_label.text = self._format_ground_text()
+        if self._cumulative_hit_label is not None:
+            self._cumulative_hit_label.text = self._format_cumulative_text()
+        if self._attempt_label is not None:
+            self._attempt_label.text = self._format_attempt_text()
 
     # ---------------------------------------------------------------------
     # Curriculum (unchanged)
