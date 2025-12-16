@@ -293,7 +293,7 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     target_cfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/target",
         spawn=sim_utils.CylinderCfg(
-            radius=0.4,   # disk radius (m)
+            radius=0.5,   # disk radius (m)
             height=0.03,  # disk thickness (m)
             axis="X",     # cylinder axis along X => face normal aligns with +X/-X
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
@@ -313,9 +313,22 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     # -------------------------------------------------------------------------
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
         num_envs=4096,
-        env_spacing=6.0,
+        env_spacing=4.0,
         replicate_physics=True,
     )
+
+    # -------------------------------------------------------------------------
+    # Ball tracking debug helpers
+    #
+    # When enabled, the env draws debug lines following each ball (or a configured subset of envs).
+    # Colors default to the sphere preview color so the trace matches the visual ball.
+    # This relies on `omni.debugdraw` and is only active when rendering is enabled.
+    # -------------------------------------------------------------------------
+    ball_trace_enabled = True
+    ball_trace_env_ids: list[int] | None = None
+    ball_trace_history_length = 200
+    ball_trace_color: tuple[float, float, float, float] | None = None
+    ball_trace_thickness = 4.0
 
     # -------------------------------------------------------------------------
     # Event configuration (domain randomization hooks)
@@ -394,7 +407,7 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     # -------------------------------------------------------------------------
     # Target placement controls
     # -------------------------------------------------------------------------
-    min_throw_dist = 3.0
+    min_throw_dist = 2.5
     target_fov_deg = 30.0
     target_height_range = (0.1, 1.0)
 
@@ -409,7 +422,14 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     use_stability = True                  # stability reward enabled (comment suggests may not be needed)
     no_proj_motion = False
     nonsparse_stability_reward = False    # stability reward only contains collision + ball-not-thrown terms
-    max_throw_dist = 5
+    max_throw_dist = 4.0
+
+    # -------------------------------------------------------------------------
+    # Presentation helpers
+    # -------------------------------------------------------------------------
+    sequential_distance_mode = True
+    sequential_distance_start = 2.5
+    sequential_distance_step = 0.1
 
     # ---------------------------------------------------------------------
     # Migration notes: changes for moving from `throwing` → `replicate_g1_throw`

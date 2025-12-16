@@ -4,8 +4,9 @@
 from __future__ import annotations
 
 import math
+from collections import deque
 from math import gcd
-from typing import Tuple
+from typing import Deque, Tuple
 from collections.abc import Sequence
 
 import torch
@@ -92,6 +93,8 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
             render_mode: Gymnasium render mode; forwarded to base env.
             **kwargs: Extra kwargs forwarded to the `DirectRLEnv` constructor.
         """
+        num_envs = getattr(cfg.scene, "num_envs", 0)
+        self._ball_trace_color_ints: dict[int, int] = self._initialize_ball_trace_color_ints(num_envs)
         super().__init__(cfg, render_mode, **kwargs)
 
         # ---------------------------------------------------------------------
@@ -149,6 +152,27 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
 
         # Optional safety termination flags
         self._joint_vel_violation = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+
+        # Optional ball trace debug visualization
+        self.ball_trace_enabled = getattr(self.cfg, "ball_trace_enabled", False)
+        self.ball_trace_env_ids = self._resolve_trace_env_ids(getattr(self.cfg, "ball_trace_env_ids", None))
+        self.ball_trace_history_length = max(1, int(getattr(self.cfg, "ball_trace_history_length", 200)))
+        self.ball_trace_color_override = getattr(self.cfg, "ball_trace_color", None)
+        self.ball_trace_color = self._resolve_trace_color()
+        self.ball_trace_thickness = float(getattr(self.cfg, "ball_trace_thickness", 4.0))
+        self._ball_trace_points: dict[int, Deque[list[float]]] = {
+            env_id: deque(maxlen=self.ball_trace_history_length)
+            for env_id in self.ball_trace_env_ids
+        } if self.ball_trace_env_ids is not None else {}
+        self._ball_trace_draw_interface = None
+        self._SimplexPointCls = None
+        if self.ball_trace_enabled and self.sim.has_gui():
+            from omni.debugdraw import acquire_debug_draw_interface
+            from omni.debugdraw._debugDraw import SimplexPoint
+
+            self._ball_trace_draw_interface = acquire_debug_draw_interface()
+            self._SimplexPointCls = SimplexPoint
+        self._ball_trace_default_color_int = self._rgba_to_argb(self.ball_trace_color)
 
         # ---------------------------------------------------------------------
         # Reward logging buffers (used for reporting + curriculum heuristics)
@@ -491,6 +515,7 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
 
         # Safety clip (prevents extreme values from destabilizing training)
         obs = torch.clip(obs, -1000, 1000)
+        self._update_ball_trace()
         return {"policy": obs}
 
     # ---------------------------------------------------------------------
@@ -698,6 +723,80 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
         return reward_vec
 
     # ---------------------------------------------------------------------
+    # Ball trace helpers
+    # ---------------------------------------------------------------------
+    def _update_ball_trace(self) -> None:
+        if not self.ball_trace_enabled or self.num_envs == 0:
+            return
+        ball_positions = self.sphere_object.data.root_pos_w[:, :3]
+        for env_id in self.ball_trace_env_ids:
+            pos = ball_positions[env_id].tolist()
+            if env_id not in self._ball_trace_points:
+                self._ball_trace_points[env_id] = deque(maxlen=self.ball_trace_history_length)
+            self._ball_trace_points[env_id].append(pos)
+        self._draw_ball_trace()
+
+    def _draw_ball_trace(self) -> None:
+        if self._ball_trace_draw_interface is None or self._SimplexPointCls is None:
+            return
+        clear_lines = getattr(self._ball_trace_draw_interface, "clear_lines", None)
+        if callable(clear_lines):
+            clear_lines()
+        line_points = []
+        for env_id, points in self._ball_trace_points.items():
+            if len(points) < 2:
+                continue
+            point_list = list(points)
+            starts = point_list[:-1]
+            ends = point_list[1:]
+            color_int = self._ball_trace_color_ints.get(env_id, self._ball_trace_default_color_int)
+            for start, end in zip(starts, ends):
+                start_pt = self._SimplexPointCls()
+                start_pt.position = tuple(start)
+                start_pt.color = color_int
+                start_pt.width = self.ball_trace_thickness
+                end_pt = self._SimplexPointCls()
+                end_pt.position = tuple(end)
+                end_pt.color = color_int
+                end_pt.width = self.ball_trace_thickness
+                line_points.extend([start_pt, end_pt])
+        if line_points:
+            self._ball_trace_draw_interface.draw_lines(line_points)
+
+    @staticmethod
+    def _rgba_to_argb(color: tuple[float, float, float, float]) -> int:
+        r, g, b, a = color
+        packed = 0
+        for comp in (a, r, g, b):
+            comp_int = max(0, min(255, int(round(comp * 255))))
+            packed = (packed << 8) | comp_int
+        return packed
+
+    def _resolve_trace_env_ids(self, env_ids_cfg) -> list[int]:
+        if env_ids_cfg is None:
+            return list(range(self.num_envs))
+        ids = []
+        for entry in env_ids_cfg:
+            try:
+                idx = int(entry)
+            except (TypeError, ValueError):
+                continue
+            ids.append(max(0, min(self.num_envs - 1, idx)))
+        unique_ids = sorted(set(ids))
+        return unique_ids if unique_ids else list(range(self.num_envs))
+
+    def _resolve_trace_color(self, override=None) -> tuple[float, float, float, float]:
+        color_source = override if override is not None else self.ball_trace_color_override
+        if color_source is not None:
+            color = tuple(color_source) if len(color_source) >= 3 else tuple(list(color_source) + [1.0])
+        else:
+            visual = getattr(self.cfg.sphere_cfg.spawn, "visual_material", None)
+            color = getattr(visual, "diffuse_color", (0.0, 1.0, 0.0))
+        if len(color) == 3:
+            color = (color[0], color[1], color[2], 1.0)
+        return tuple(color[:4])
+
+    # ---------------------------------------------------------------------
     # Dones / Termination
     # ---------------------------------------------------------------------
     def _check_joint_velocity_violation(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -796,6 +895,16 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
         # Reset robot internal buffers and base env bookkeeping
         self._robot.reset(env_ids)
         super()._reset_idx(env_ids)
+
+        if self.ball_trace_enabled:
+            reset_env_ids = env_ids.tolist() if torch.is_tensor(env_ids) else list(env_ids)
+            for env_id in reset_env_ids:
+                if env_id in self._ball_trace_points:
+                    self._ball_trace_points[env_id].clear()
+            if self._ball_trace_draw_interface is not None:
+                clear_lines = getattr(self._ball_trace_draw_interface, "clear_lines", None)
+                if callable(clear_lines):
+                    clear_lines()
 
         self._build_alpha_joint_indices()
         grip_action_index = self._main_joint_ids.shape[0]  # finger/grip scalar action index
@@ -1027,9 +1136,16 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
 
         fixed_dist = getattr(self.cfg, "fixed_throw_dist", None)
         fixed_height = getattr(self.cfg, "fixed_target_height", None)
+        sequential_mode = getattr(self.cfg, "sequential_distance_mode", False) and fixed_dist is None
 
         # Distance sampling (curriculum-controlled unless fixed)
-        if fixed_dist is not None:
+        if sequential_mode:
+            start = float(getattr(self.cfg, "sequential_distance_start", self.cfg.min_throw_dist))
+            step = float(getattr(self.cfg, "sequential_distance_step", 0.1))
+            step = max(step, 0.0)
+            dist_final = start + command_ids.to(torch.float32) * step
+            dist_final = torch.clamp(dist_final, min=self.cfg.min_throw_dist, max=self.cfg.max_throw_dist)
+        elif fixed_dist is not None:
             dist_final = torch.full_like(self.throwing_commands[command_ids, 0], float(fixed_dist))
         else:
             dist_min, dist_max = self.distance_range
@@ -1279,6 +1395,8 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
             if target_material_path is not None:
                 target_shader_path = f"{env_path}/target/geometry/{target_material_path}/Shader"
                 self._set_shader_color(stage, target_shader_path, color)
+            color_with_alpha = (color[0], color[1], color[2], 1.0)
+            self._ball_trace_color_ints[env_index] = self._rgba_to_argb(color_with_alpha)
 
     def _generate_env_color_palette(self, num_envs: int) -> list[tuple[float, float, float]]:
         """Generate a visually distinct color palette for N environments.
@@ -1293,6 +1411,15 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
             hue = (env_index / max(num_envs, 1)) % 1.0
             colors.append(self._hsv_to_rgb(hue, saturation, value))
         return colors
+
+    def _initialize_ball_trace_color_ints(self, num_envs: int) -> dict[int, int]:
+        """Pre-fill RGB ints for each env's color palette (matches `_apply_env_color_pairs`)."""
+        palette = self._generate_env_color_palette(num_envs)
+        color_ints = {}
+        for idx, color in enumerate(palette):
+            color_with_alpha = (color[0], color[1], color[2], 1.0)
+            color_ints[idx] = self._rgba_to_argb(color_with_alpha)
+        return color_ints
 
     @staticmethod
     def _set_shader_color(stage, shader_path: str, color: tuple[float, float, float]):
