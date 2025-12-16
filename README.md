@@ -1,5 +1,7 @@
 # Alpha RL Throw 🚀
 
+https://github.com/user-attachments/assets/9256cd9c-8a7d-41a0-98fd-096e05af7c96
+
 Refer to the CONDOR-EPIC: [CDR-1586](https://theaiinstitute.atlassian.net/browse/CDR-1586)
 
 This is a forked setup from [GCR-PPO](https://github.com/humphreymunn/GCR-PPO), a focused fork/adaptation of [IsaacLab](https://github.com/isaac-sim/IsaacLab) targeting **IsaacLab 2.1.0** with **RSL-RL**.
