@@ -3,7 +3,25 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-# from isaaclab_assets.robots.cartpole import CARTPOLE_CFG
+"""Environment configuration for the Replicate G1 Throw (DirectRLEnv) task.
+
+This module defines the *configuration objects* used by IsaacLab to construct:
+- Simulation settings (time-step, physics materials, solver iterations, etc.)
+- Terrain (plane or generator-based terrain)
+- Scene (number of env instances, spacing, replication)
+- Assets (robot articulation, sphere/ball, target marker)
+- Events / randomizations (domain randomization hooks via EventTerm)
+- Sensors (contact sensor)
+- Task-specific hyperparameters (reward scales, observation toggles, reset noise, target sampling)
+
+KT notes:
+- This file is configuration-only (dataclass-style). The actual environment logic
+  (step(), rewards, reset, observations) lives in the corresponding env file.
+- `@configclass` is IsaacLab's pattern for structured configs that can be composed
+  and overridden by Hydra/CLI.
+"""
+
+# from isaaclab_assets.robots.cartpole import CARTPOLE_CFG  # Example import (not used here)
 
 from isaaclab.assets import ArticulationCfg
 from isaaclab.envs import DirectRLEnvCfg
@@ -11,25 +29,28 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.utils import configclass
 
-
 ###### part of CDR-1630 ######
-# terrain specific imports
+# Terrain generation utilities (optional; currently plane terrain is used by default)
 import isaaclab.terrains as terrain_gen
 from isaaclab.terrains import TerrainImporterCfg
 
-# event specific imports
+# Event / domain randomization utilities
 import isaaclab.envs.mdp as mdp
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import SceneEntityCfg
 
-# env_cfg specific imports
+# Asset + sensor configs used by the environment
 import isaaclab.sim as sim_utils
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 from isaaclab.assets import RigidObjectCfg
-from isaaclab.sensors import ContactSensorCfg, RayCasterCfg, patterns
+from isaaclab.sensors import ContactSensorCfg, RayCasterCfg, patterns  # RayCasterCfg/patterns imported but not used here
 from .alpha_utils import ALPHA_CFG
 
 
+# -----------------------------------------------------------------------------
+# Optional terrain generator configuration (commented out in the main cfg below).
+# This describes a tiled terrain with multiple sub-terrain types.
+# -----------------------------------------------------------------------------
 COBBLESTONE_ROAD_CFG = terrain_gen.TerrainGeneratorCfg(
     size=(5.0, 5.0),
     border_width=20.0,
@@ -41,15 +62,19 @@ COBBLESTONE_ROAD_CFG = terrain_gen.TerrainGeneratorCfg(
     difficulty_range=(0.0, 1.0),
     use_cache=True,
     sub_terrains={
+        # Flat plane tiles
         "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.25),
+        # Random heightfield roughness
         "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
             proportion=0.25, noise_range=(0.02, 0.05), noise_step=0.02, border_width=0.25
         ),
+        # Sloped pyramids
         "slopey": terrain_gen.HfPyramidSlopedTerrainCfg(
-            proportion=0.25, slope_range=(0.05,0.15), platform_width=0.0
+            proportion=0.25, slope_range=(0.05, 0.15), platform_width=0.0
         ),
+        # Inverted sloped pyramids (valley-like)
         "slopey_inverted": terrain_gen.HfPyramidSlopedTerrainCfg(
-            proportion=0.25, slope_range=(0.05,0.15), platform_width=0.0, inverted=True,
+            proportion=0.25, slope_range=(0.05, 0.15), platform_width=0.0, inverted=True
         ),
     },
 )
@@ -57,16 +82,29 @@ COBBLESTONE_ROAD_CFG = terrain_gen.TerrainGeneratorCfg(
 
 @configclass
 class EventCfg:
-    """Configuration for randomization."""
+    """Event (domain randomization) configuration.
 
-    # physics material randomization
-    # 
+    Event terms are hooks that IsaacLab can execute at specified times:
+    - "startup": once at environment creation/reset
+    - "reset": at every episode reset
+    - "interval": periodically during rollouts
+
+    Here we enable rigid body material randomization to improve robustness.
+    """
+
+    # -------------------------------------------------------------------------
+    # Physics material randomization for the robot.
+    #
+    # This randomizes physical material properties (friction/restitution) of
+    # bodies matching the regex `.*` under the "robot" scene entity.
+    # -------------------------------------------------------------------------
     physics_material = EventTerm(
         func=mdp.randomize_rigid_body_material,
         mode="startup",
-
         params={
+            # Apply to all robot rigid bodies
             "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
+            # Keep fixed ranges here (same min=max) but retain buckets for future flexibility
             "static_friction_range": (0.8, 0.8),
             "dynamic_friction_range": (0.6, 0.6),
             "restitution_range": (0.0, 0.0),
@@ -74,6 +112,11 @@ class EventCfg:
         },
     )
 
+    # -------------------------------------------------------------------------
+    # The blocks below are intentionally commented out (kept for reference).
+    # They represent experiments for joint friction randomization and base mass
+    # perturbations (useful in domain randomization for sim2real).
+    # -------------------------------------------------------------------------
 
     # arm_joints = [
     #     # Left arm joints
@@ -82,7 +125,7 @@ class EventCfg:
     #     "left_shoulder_yaw_joint",
     #     "left_elbow_joint",
     #     "left_wrist_roll_joint",
-
+    #
     #     # Right arm joints
     #     "right_shoulder_pitch_joint",
     #     "right_shoulder_roll_joint",
@@ -104,43 +147,68 @@ class EventCfg:
     # Why 0.7 → 1.3?
     # Hardware joints often have 20–40% real-world friction variability.
     # Too high variation breaks training; too low variation doesn’t matter.
-    # This range is the sweet spot for throwing / fast arm motions.
-
+    # This range is a practical sweet spot for throwing / fast arm motions.
 
     # add_base_mass = EventTerm(
     #     func=mdp.randomize_rigid_body_mass,
     #     mode="startup",
     #     params={
-    #         "asset_cfg": SceneEntityCfg("robot", body_names="PLINTH"), # base_link for chuck, base for spot, imu_link for unitree
+    #         "asset_cfg": SceneEntityCfg("robot", body_names="PLINTH"),  # base link name for this robot
     #         "mass_distribution_params": (-0.5, 0.5),
     #         "operation": "add",
     #     },
     # )
-    '''push_robot = EventTerm(
-        func=mdp.push_by_setting_velocity,
-        mode="interval",
-        interval_range_s=(0.0, 4.0),
-        params={"velocity_range": {"x": (-0.25, 0.25), "y": (-0.25, 0.25)}},
-    )'''
+
+    # push_robot = EventTerm(
+    #     func=mdp.push_by_setting_velocity,
+    #     mode="interval",
+    #     interval_range_s=(0.0, 4.0),
+    #     params={"velocity_range": {"x": (-0.25, 0.25), "y": (-0.25, 0.25)}},
+    # )
 
 
 @configclass
 class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
-    # env
+    """Top-level configuration for the Replicate G1 Throw DirectRLEnv.
+
+    This config class is consumed by the environment implementation to set up:
+    - Episode timing and action/observation sizes
+    - Simulation properties (dt, rendering rate, physics materials)
+    - Terrain and assets
+    - Sensors and event randomizations
+    - Observation toggles and reward scale hyperparameters
+    - Target generation / curriculum parameters
+
+    Any attribute defined here is typically accessible in the env as `self.cfg.<...>`.
+    """
+
+    # -------------------------------------------------------------------------
+    # Environment roll-out timing and spaces
+    # -------------------------------------------------------------------------
     episode_length_s = 2.0
-    decimation = 4
+    decimation = 4  # action repeats / control decimation relative to sim dt
     action_scale = 0.5
+
     # Actions: [ torso (1), right arm (7), left arm (7), grip (1) ] = 16
     action_space = 16
+
+    # Observation vector dimension expected by the policy
     observation_space = 105
+
+    # No separate state for asymmetric actor-critic (set to 0)
     state_space = 0
+
+    # Whether to include air resistance in dynamics (handled in env logic)
     air_resistance = False
 
-    # simulation
+    # -------------------------------------------------------------------------
+    # Simulation configuration
+    # -------------------------------------------------------------------------
     sim: SimulationCfg = SimulationCfg(
-        dt=1 / 200,
-        render_interval=decimation,
+        dt=1 / 200,  # physics timestep
+        render_interval=decimation,  # render at control rate
         physics_material=sim_utils.RigidBodyMaterialCfg(
+            # Combine rules determine how friction/restitution are composed on contact
             friction_combine_mode="multiply",
             restitution_combine_mode="multiply",
             static_friction=1.0,
@@ -149,11 +217,18 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
         ),
     )
 
-    '''terrain = TerrainImporterCfg(
+    # -------------------------------------------------------------------------
+    # Terrain configuration
+    #
+    # Two options exist here:
+    # 1) Generated multi-terrain (commented out)
+    # 2) Simple plane terrain (enabled)
+    # -------------------------------------------------------------------------
+    '''
+    terrain = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="generator",
         terrain_generator=COBBLESTONE_ROAD_CFG,
-        #max_init_terrain_level=COBBLESTONE_ROAD_CFG.num_rows - 1,
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
@@ -167,8 +242,10 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
             texture_scale=(0.1, 0.1),
         ),
         debug_vis=True,
-    )'''
+    )
+    '''
 
+    # Default terrain: infinite plane with a visual material
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="plane",
@@ -181,84 +258,125 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
             restitution=0.0,
         ),
         visual_material=sim_utils.MdlFileCfg(
-                mdl_path=f"{ISAACLAB_NUCLEUS_DIR}/Materials/TilesMarbleSpiderWhiteBrickBondHoned/TilesMarbleSpiderWhiteBrickBondHoned.mdl",
-                project_uvw=True,
-                texture_scale=(0.1, 0.1),
+            mdl_path=(
+                f"{ISAACLAB_NUCLEUS_DIR}/Materials/TilesMarbleSpiderWhiteBrickBondHoned/"
+                "TilesMarbleSpiderWhiteBrickBondHoned.mdl"
             ),
+            project_uvw=True,
+            texture_scale=(0.1, 0.1),
+        ),
         debug_vis=False,
     )
 
+    # -------------------------------------------------------------------------
+    # Ball (sphere) configuration
+    # -------------------------------------------------------------------------
     sphere_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/sphere",
-        spawn= sim_utils.SphereCfg(
+        spawn=sim_utils.SphereCfg(
             radius=0.023,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=False,
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                kinematic_enabled=False,
                 disable_gravity=False,
-                rigid_body_enabled=True),
+                rigid_body_enabled=True,
+            ),
             mass_props=sim_utils.MassPropertiesCfg(mass=0.085),
             collision_props=sim_utils.CollisionPropertiesCfg(),
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg()
+        init_state=RigidObjectCfg.InitialStateCfg(),
     )
 
+    # -------------------------------------------------------------------------
+    # Target configuration (visual/kinematic marker the robot should aim for)
+    # -------------------------------------------------------------------------
     target_cfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/target",
         spawn=sim_utils.CylinderCfg(
-            radius=0.4,          # disk radius (m)
-            height=0.03,          # thicker disk
-            axis="X",             # axis along X => faces normal to X
+            radius=0.4,   # disk radius (m)
+            height=0.03,  # disk thickness (m)
+            axis="X",     # cylinder axis along X => face normal aligns with +X/-X
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
-                kinematic_enabled=True,
+                kinematic_enabled=True,  # target is positioned by the env, not physics
                 rigid_body_enabled=True,
             ),
             collision_props=sim_utils.CollisionPropertiesCfg(),
             visual_material=sim_utils.PreviewSurfaceCfg(
-                diffuse_color=(1.0, 0.0, 0.0),   # bright red
+                diffuse_color=(1.0, 0.0, 0.0),  # bright red
             ),
         ),
-        # init_state=RigidObjectCfg.InitialStateCfg(
-        #     pos=(4.0, 0.0, 1.0),      # in front of robot, at some height
-        #     rot=(1.0, 0.0, 0.0, 0.0), # identity, since axis="X" already
-        # ),
+        # init_state can be specified here; currently left to env logic
     )
 
-    # scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=6.0, replicate_physics=True)
+    # -------------------------------------------------------------------------
+    # Scene configuration
+    # -------------------------------------------------------------------------
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(
+        num_envs=4096,
+        env_spacing=6.0,
+        replicate_physics=True,
+    )
 
-    # events
+    # -------------------------------------------------------------------------
+    # Event configuration (domain randomization hooks)
+    # -------------------------------------------------------------------------
     events: EventCfg = EventCfg()
 
+    # -------------------------------------------------------------------------
+    # Sensors
+    # -------------------------------------------------------------------------
     contact_sensor: ContactSensorCfg = ContactSensorCfg(
-        prim_path="/World/envs/env_.*/Robot/.*", history_length=3, update_period=0.005, track_air_time=True
+        prim_path="/World/envs/env_.*/Robot/.*",
+        history_length=3,
+        update_period=0.005,
+        track_air_time=True,
     )
 
-    # robot
+    # -------------------------------------------------------------------------
+    # Robot configuration
+    # -------------------------------------------------------------------------
+    # Start from shared ALPHA_CFG and override the prim path for this environment.
     robot: ArticulationCfg = ALPHA_CFG.replace(prim_path="/World/envs/env_.*/Robot")
 
-    throwing_reward_scale = 3.0  # prioritize target accuracy
-    throw_height_reward_scale = 1.0  # secondary to distance/accuracy
-    throw_height_target = 0.6
-    action_rate_reward_scale = -1e-3
-    joint_torque_reward_scale = -2.5e-6
-    joint_vel_reward_scale = -1e-4
-    joint_accel_reward_scale = -2.5e-8
-    joint_vel_penalty_clip = 1.0e4
+    # -------------------------------------------------------------------------
+    # Reward scales / penalties
+    #
+    # Convention used in many IsaacLab tasks:
+    # - Positive values: rewards (maximize)
+    # - Negative values: penalties (minimize)
+    # -------------------------------------------------------------------------
+    throwing_reward_scale = 3.0            # prioritize target accuracy
+    throw_height_reward_scale = 1.0        # secondary shaping term
+    throw_height_target = 0.6              # desired apex/height metric target
+    action_rate_reward_scale = -1e-3       # penalize rapid action changes
+    joint_torque_reward_scale = -2.5e-6    # penalize high torques
+    joint_vel_reward_scale = -1e-4         # penalize high joint velocities
+    joint_accel_reward_scale = -2.5e-8     # penalize high joint accelerations
+    joint_vel_penalty_clip = 1.0e4         # clip for stability in penalty terms
     joint_accel_penalty_clip = 1.0e4
-    action_limit_penalty_scale = -1e-3
-    #throw_time_reward_scale = 1.0#1.0
-    #zvel_reward_scale = 0.75
+    action_limit_penalty_scale = -1e-3     # penalize exceeding action limits
 
-    # Reset/observation randomization
+    # throw_time_reward_scale = 1.0
+    # zvel_reward_scale = 0.75
+
+    # -------------------------------------------------------------------------
+    # Reset and observation randomization (initial state noise)
+    # -------------------------------------------------------------------------
     right_arm_init_range = 0.35
     other_joint_init_range = 0.03
     joint_pos_noise_range = (-0.05, 0.05)
     joint_vel_noise_range = (-0.07, 0.07)
 
+    # -------------------------------------------------------------------------
+    # Observation toggles
+    #
+    # These booleans typically gate which terms are concatenated into the
+    # observation vector by the environment implementation.
+    # -------------------------------------------------------------------------
     obs_lin_vel = True
     obs_ang_vel = False
     obs_proj_grav = True
-    
+
     obs_baseheight = False
     obs_footangle = False
     obs_notrelease = True
@@ -269,24 +387,33 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     obs_time = True
     obs_target_rel = True
     obs_processed_actions = True
+
+    # Threshold used in throwing reward/logic (exact usage lives in env code)
     r_throw_thresh = 0.5
 
-    # target placement controls
-    min_throw_dist = 3.0  # start curriculum close, then expand outward
+    # -------------------------------------------------------------------------
+    # Target placement controls
+    # -------------------------------------------------------------------------
+    min_throw_dist = 3.0
     target_fov_deg = 30.0
     target_height_range = (0.1, 1.0)
-    # Rotate target heading relative to the world forward (+X). Alpha faces +Y, so add 90 deg.
+
+    # Rotate target heading relative to the world forward (+X).
+    # Comment indicates Alpha faces +Y, so offset is used to align frames.
     target_heading_offset_deg = 90.0
     robot_yaw_offset_deg = 0.0
 
-    # just for experiments...
-    use_stability = True # dont need
+    # -------------------------------------------------------------------------
+    # Experimental flags / ablations
+    # -------------------------------------------------------------------------
+    use_stability = True                  # stability reward enabled (comment suggests may not be needed)
     no_proj_motion = False
-    nonsparse_stability_reward = False # so that stability reward contains only collision and ball not thrown condition
+    nonsparse_stability_reward = False    # stability reward only contains collision + ball-not-thrown terms
     max_throw_dist = 5
 
     # ---------------------------------------------------------------------
-    # things I changed for migration from throwing to replicate_g1_throw
+    # Migration notes: changes for moving from `throwing` → `replicate_g1_throw`
+    # ---------------------------------------------------------------------
     obs_roll = False
 
     distance_throw = False
@@ -295,8 +422,8 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     # Which hand throws (affects target placement side and grasp link choice)
     throw_hand_side = "right"
 
-    # need to check if this is required
+    # Additional stability-related reward knobs
     roll_reward_scale = 0.0
-    stability_reward_scale = 0.25#0.00001#1 (0.2 before)
-    r_stability_thresh = 0.22 
+    stability_reward_scale = 0.25  # was experimented at smaller values (see comment)
+    r_stability_thresh = 0.22
     # ---------------------------------------------------------------------
