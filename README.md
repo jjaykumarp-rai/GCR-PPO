@@ -127,10 +127,17 @@ tensorboard --logdir logs/
 
 Play defaults to a 30° target FOV and a 0.1–1.0 m height window so the board stays nearby during evaluation. Use the `--max_throw_dist`, `--fixed_target_offset`, and other play-only flags documented earlier to tweak this if needed.
 
+### Replicate G1 Throw Reference 📘
+
+- The `docs/replicate_g1_throw_spec.md` file collects the observation/action dimensions, reward component scales, curriculum progression, termination logic, control/physics cadence (200 Hz sim, 50 Hz control), and domain randomization knobs for `Isaac-Replicate-G1-Throw-Direct-v0`.
+- Link to it whenever you need a concise reference for notebooks, reports, or onboarding notes about this task.
+
 ### Media 🎥
-- Front-directed throw sample: `media/g1-front-dir-12K.mp4`
-- Random-direction throw sample: `media/g1-rand-dir-12K.mp4`
-- Random-direction with velocity tracking: `media/g1-rand-dir-12K-vel-track.mp4`
+- Full video archives plus checkpoints for the G1 reproduction and latest Alpha throwing setup are shared on [Google Drive](https://drive.google.com).
+  - Front-directed throw sample
+  - Random-direction throw sample
+  - Random-direction with velocity tracking
+  - Final Alpha setup
 
 ### Adding New Tasks 🆕
 For adding new (a) Direct (single-class) tasks and (b) Manager (cfg-driven) tasks, see the original [README](README.og.md).

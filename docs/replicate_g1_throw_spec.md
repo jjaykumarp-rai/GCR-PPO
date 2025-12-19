@@ -4,6 +4,16 @@ This document summarizes the key **observation, action, reward, and curriculum**
 details for the `Isaac-Replicate-G1-Throw-Direct-v0` task, along with the
 **control and physics cadence**.
 
+## Contents
+
+- [Observations](#-observations)
+- [Actions](#-actions)
+- [Rewards](#-rewards)
+- [Curriculum](#-curriculum)
+- [Termination](#-termination)
+- [Physics & Model Frequencies](#-physics--model-frequencies)
+- [Domain Randomization](#-domain-randomization)
+
 ---
 
 ## 👀 Observations
