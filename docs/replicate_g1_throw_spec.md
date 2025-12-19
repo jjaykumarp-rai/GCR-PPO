@@ -154,3 +154,11 @@ and logged via `_episode_sums`.
 ### 🧠 Control / Policy
 - Executes every **4 simulation steps**
 - Effective control frequency: **50 Hz**
+
+---
+
+## 🧪 Domain Randomization
+
+- `EventCfg.physics_material` randomizes the robot's friction/restitution for every `"robot.*"` body at startup to diversify contact behaviors.
+- Reset noise parameters (`right_arm_init_range`, `other_joint_init_range`, `joint_pos_noise_range`, `joint_vel_noise_range`) perturb joint settings and velocities on every episode, spreading the robot's starting configurations.
+- Additional `EventTerm`s for joint friction, base mass, or push perturbations are defined (but commented) in `replicate_g1_throw_env_cfg.py`; simply enable them to expand domain randomization further.
