@@ -32,6 +32,12 @@ parser.add_argument(
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
 parser.add_argument("--use_critic_multi", action="store_true", default=False)
 parser.add_argument("--architecture", type=str, default=None, help="Architecture of the RL agent. Specified as '56,56' etc. for actor and critic.")
+parser.add_argument(
+    "--suppress_episode_reward_logs",
+    action="store_true",
+    default=False,
+    help="Suppress the per-episode average reward logs during play.",
+)
 # arguments for custom multi-objective experiments:
 parser.add_argument("--energy_rew", type=int, default=-1, help="Use energy reward.")
 parser.add_argument("--gait_rew", type=int, default=-1, help="Use gait reward.")
@@ -111,6 +117,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
     log_root_path = os.path.abspath(log_root_path)
     print(f"[INFO] Loading experiment from directory: {log_root_path}")
+    env_cfg.target_fov_deg = 30.0
+    env_cfg.target_height_range = (0.1, 1.0)
+
     if args_cli.use_pretrained_checkpoint:
         resume_path = get_published_pretrained_checkpoint("rsl_rl", task_name)
         if not resume_path:
@@ -159,8 +168,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
-    env.unwrapped.distance_range = [1.,5.] # for throwing env evaluation
-    
+    # restrict play distances to 2.5-5 m range
+    if hasattr(env.unwrapped, "distance_range"):
+        env.unwrapped.distance_range = [2.0, 4.0]
+    else:
+        env.unwrapped.distance_range = [2.0, 4.0]
+
     # update multi_objective envs
     FIELDS = {
         "energy_rew":    ("energy_rew_vec",    "energy"),
@@ -221,8 +234,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     timestep = 0
     total_reward = torch.zeros(env.num_envs, device=env.device)
     episode_rewards = []
-    episodes_completed = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
-    
+    last_episode_log_count = 0
+
     # simulate environment
     start_time_global = time.time()
     
@@ -240,19 +253,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             
             # check for episode completion
             if dones.any():
-                # log rewards for completed episodes
                 completed_envs = dones.nonzero(as_tuple=True)[0]
                 for env_idx in completed_envs:
-                    if not episodes_completed[env_idx]:
-                        episode_rewards.append(total_reward[env_idx].item())
-                        episodes_completed[env_idx] = True
-                
-                # check if all environments have completed at least one episode
-                if episodes_completed.all():
+                    episode_rewards.append(total_reward[env_idx].item())
+                    total_reward[env_idx] = 0.0
+                if len(episode_rewards) > last_episode_log_count:
+                    last_episode_log_count = len(episode_rewards)
                     avg_reward = sum(episode_rewards) / len(episode_rewards)
-                    print(f"[INFO] All {env.num_envs} environments completed one episode. Average reward: {avg_reward:.4f}")
-                    #break
-        
+                    if not args_cli.suppress_episode_reward_logs:
+                        print(f"[INFO] Episodes completed: {len(episode_rewards)} | Average reward: {avg_reward:.4f}")
+                        
         if args_cli.video:
             timestep += 1
             # Exit the play loop after recording one video

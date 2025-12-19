@@ -149,6 +149,7 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
         self.total_target_hits = 0
         self.total_ground_hits = 0
         self.total_throw_attempts = 0
+        self.hand_recontact = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
         self._target_hit_label: "ui.Label | None" = None
         self._ground_hit_label: "ui.Label | None" = None
         self._cumulative_hit_label: "ui.Label | None" = None
@@ -207,6 +208,8 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
                 "dof_torques_l2",
                 "dof_acc_l2",
                 "ballrel_rew",
+                "fingers_not_blocking",
+                "hand_recontact",
             ]
         }
         self.reward_component_names = list(self._episode_sums.keys())
@@ -697,6 +700,26 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
         if ball_released_envs.numel() > 0:
             ballrel_rew[ball_released_envs] = getattr(self.cfg, "ball_release_reward_scale", 0.0)
 
+        hand_pos = self._robot.data.body_pos_w[:, self._throw_hand_body_id]
+        target_pos = self._target_world()
+        target_dir_world = target_pos - hand_pos
+        target_dir_norm = torch.norm(target_dir_world, dim=1, keepdim=True).clamp_min(1e-6)
+        target_dir_world = target_dir_world / target_dir_norm
+        ee_quat = self._robot.data.body_quat_w[:, self._throw_hand_body_id]
+        vel_target_ee = self._quat_rotate_inverse(ee_quat, target_dir_world)
+        x_component = torch.abs(vel_target_ee[:, 0])
+        sigma = float(getattr(self.cfg, "fingers_not_blocking_sigma", 0.1))
+        finger_reward = torch.clamp(1.0 / (1.0 + x_component / sigma), max=1.0)
+        finger_reward *= self.not_released_ball.float()
+        finger_reward *= self.step_dt / self.cfg.episode_length_s
+
+        recontact_mask = (dist_hand_ball <= release_threshold) & (~self.not_released_ball) & (~self.hand_recontact)
+        new_recontact = recontact_mask & (~self.hand_recontact)
+        hand_recontact_penalty = torch.zeros(self.num_envs, device=self.device)
+        if new_recontact.any():
+            hand_recontact_penalty[new_recontact] = getattr(self.cfg, "hand_recontact_penalty_scale", -1.0)
+            self.hand_recontact |= new_recontact
+
         # ---------------------------------------------------------------------
         # Pack rewards (each scaled by cfg hyperparameters)
         # ---------------------------------------------------------------------
@@ -708,6 +731,8 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
             "dof_torques_l2": joint_torques * self.cfg.joint_torque_reward_scale * self.step_dt,
             "dof_acc_l2": joint_accel * self.cfg.joint_accel_reward_scale * self.step_dt,
             "ballrel_rew": ballrel_rew,
+            "fingers_not_blocking": finger_reward * self.cfg.fingers_not_blocking_reward_scale,
+            "hand_recontact": hand_recontact_penalty,
         }
 
         # ---------------------------------------------------------------------
@@ -881,7 +906,7 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
         timeout_frac = getattr(self.cfg, "no_release_timeout_frac", 0.75)
         no_release_timeout = (self.episode_length_buf > timeout_frac * self.max_episode_length) & (~released)
 
-        terminated = hit_ground | too_far | no_release_timeout | joint_vel_violation
+        terminated = hit_ground | too_far | no_release_timeout | joint_vel_violation | self.hand_recontact
 
         # Success definition: target board detection
         success_radius = float(getattr(self.cfg, "success_radius", 0.55))
@@ -943,6 +968,8 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
         # Reset robot internal buffers and base env bookkeeping
         self._robot.reset(env_ids)
         super()._reset_idx(env_ids)
+
+        self.hand_recontact[env_ids] = False
 
         if self.ball_trace_enabled:
             reset_env_ids = env_ids.tolist() if torch.is_tensor(env_ids) else list(env_ids)
@@ -1452,6 +1479,13 @@ class ReplicateG1ThrowEnv(DirectRLEnv):
         ry = 2 * ((xy + wz) * vx + (ww - xx + yy - zz) * vy + (yz - wx) * vz)
         rz = 2 * ((xz - wy) * vx + (yz + wx) * vy + (ww - xx - yy + zz) * vz)
         return torch.stack((rx, ry, rz), dim=1)
+
+    @staticmethod
+    def _quat_rotate_inverse(quat: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
+        """Rotate vec by the inverse (conjugate) of quat."""
+        w, x, y, z = quat.unbind(dim=1)
+        q_conj = torch.stack((w, -x, -y, -z), dim=1)
+        return ReplicateG1ThrowEnv._quat_apply(q_conj, vec)
 
     def _apply_env_color_pairs(self):
         """Assign per-environment colors to sphere and target for visual debugging.

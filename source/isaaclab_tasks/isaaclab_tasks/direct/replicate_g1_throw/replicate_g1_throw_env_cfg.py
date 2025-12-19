@@ -368,6 +368,11 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     joint_vel_penalty_clip = 1.0e4         # clip for stability in penalty terms
     joint_accel_penalty_clip = 1.0e4
     action_limit_penalty_scale = -1e-3     # penalize exceeding action limits
+    projectile_reward_scale = 0.5          # keep projectile shaping active by default
+    ball_release_reward_scale = 0.5        # reward for clean ball releases
+    fingers_not_blocking_reward_scale = 0.5  # encourage throw direction away from fingers
+    fingers_not_blocking_sigma = 0.1
+    hand_recontact_penalty_scale = -1.0
 
     # throw_time_reward_scale = 1.0
     # zvel_reward_scale = 0.75
@@ -428,7 +433,7 @@ class ReplicateG1ThrowEnvCfg(DirectRLEnvCfg):
     use_stability = True                  # stability reward enabled (comment suggests may not be needed)
     no_proj_motion = False
     nonsparse_stability_reward = False    # stability reward only contains collision + ball-not-thrown terms
-    max_throw_dist = 3.5
+    max_throw_dist = 8
 
     # -------------------------------------------------------------------------
     # Presentation helpers

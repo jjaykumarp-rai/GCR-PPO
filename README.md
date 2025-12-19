@@ -108,6 +108,9 @@ Supported example tasks:
 ```
 
 See `scripts/reinforcement_learning/rsl_rl/train.py` for available flags ⚙️
+The throwing task also exposes a `fingers_not_blocking_reward_scale` cfg to encourage keeping the grip closed during flight (set this in the env cfg if you want that shaping term enabled).
+Projectile shaping and ball-release bonuses live behind `projectile_reward_scale` and `ball_release_reward_scale` settings, and all three default to non-zero values in the replicate G1 config so the release/trajectory shaping is already active for both training and play.
+There is also a `hand_recontact_penalty_scale` and `fingers_not_blocking_sigma` in the replicate G1 config if you want to punish the hand re-catching the ball or tune how aggressively the fingers must part from the throw vector.
 (e.g., --energy, --gait, --armsp, etc.) and their ranges.
 
 ### Output and Logs 📊
@@ -121,6 +124,8 @@ tensorboard --logdir logs/
 ```sh
 ./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/play.py --task=Isaac-Replicate-G1-Throw-Direct-v0 --num_envs 4 --checkpoint=<path/to/checkpoint.pt>
 ```
+
+Play defaults to a 30° target FOV and a 0.1–1.0 m height window so the board stays nearby during evaluation. Use the `--max_throw_dist`, `--fixed_target_offset`, and other play-only flags documented earlier to tweak this if needed.
 
 ### Media 🎥
 - Front-directed throw sample: `media/g1-front-dir-12K.mp4`
